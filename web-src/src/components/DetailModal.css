@@ -1,0 +1,211 @@
+/* 详情弹窗样式 */
+.detail-modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.detail-modal {
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  padding: 24px;
+  width: 90%;
+  max-width: 1000px;
+  max-height: 85vh;
+  overflow: auto;
+  box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
+}
+
+.detail-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-modal-header h3 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.detail-modal-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.detail-modal-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+/* 联动视图 */
+.linked-view {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  min-height: 400px;
+  margin-bottom: 16px;
+}
+
+.linked-view-panel {
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.linked-view-header {
+  padding: 10px 14px;
+  background: var(--bg-primary);
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+}
+
+.linked-view-content {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+}
+
+/* Hex 视图 */
+.hex-content {
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 11px;
+  line-height: 1.8;
+}
+
+.hex-line {
+  display: flex;
+  white-space: nowrap;
+}
+
+.hex-offset {
+  color: var(--text-secondary);
+  width: 70px;
+  flex-shrink: 0;
+}
+
+.hex-bytes {
+  flex: 1;
+  display: flex;
+  gap: 4px;
+}
+
+.hex-byte {
+  display: inline-block;
+  width: 22px;
+  text-align: center;
+  border-radius: 2px;
+}
+
+.hex-ascii {
+  color: var(--success);
+  width: 80px;
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+
+/* Hex 高亮颜色 */
+.hex-highlight-type {
+  background: rgba(59, 130, 246, 0.3);
+  color: #93c5fd;
+}
+
+.hex-highlight-size {
+  background: rgba(34, 197, 94, 0.3);
+  color: #86efac;
+}
+
+.hex-highlight-timestamp {
+  background: rgba(245, 158, 11, 0.3);
+  color: #fcd34d;
+}
+
+.hex-highlight-data {
+  background: rgba(236, 72, 153, 0.3);
+  color: #f9a8d4;
+}
+
+.hex-highlight-selected {
+  background: rgba(59, 130, 246, 0.5) !important;
+  outline: 1px solid var(--accent);
+}
+
+/* 属性树 */
+.property-tree {
+  font-size: 12px;
+}
+
+.property-node {
+  border-radius: 4px;
+}
+
+.property-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.property-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.property-row.selected {
+  background: rgba(59, 130, 246, 0.2);
+}
+
+.property-name {
+  color: var(--text-secondary);
+}
+
+.property-value {
+  font-family: monospace;
+  color: var(--text-primary);
+}
+
+.property-expandable::before {
+  content: '▶';
+  display: inline-block;
+  width: 12px;
+  font-size: 8px;
+  transition: transform 0.15s;
+  margin-right: 4px;
+}
+
+.property-node.expanded>.property-row.property-expandable::before {
+  transform: rotate(90deg);
+}
+
+.property-children {
+  margin-left: 16px;
+  border-left: 1px solid var(--border);
+  padding-left: 8px;
+}
+
+/* 操作按钮 */
+.detail-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}

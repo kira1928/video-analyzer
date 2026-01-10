@@ -1,0 +1,310 @@
+/* 文件上传区 */
+.upload-zone {
+  border: 2px dashed var(--border);
+  border-radius: 12px;
+  padding: 48px;
+  text-align: center;
+  transition: all 0.3s ease;
+  cursor: pointer;
+  margin-bottom: 24px;
+}
+
+.upload-zone:hover {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.upload-zone h3 {
+  font-size: 18px;
+  margin-bottom: 8px;
+}
+
+.upload-zone p {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.upload-zone input {
+  display: none;
+}
+
+/* 加载状态 */
+.loading {
+  text-align: center;
+  padding: 40px;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--bg-tertiary);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 16px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 文件信息 */
+.file-info {
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.file-info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+}
+
+.info-item {
+  background: var(--bg-tertiary);
+  padding: 16px;
+  border-radius: 8px;
+}
+
+.info-item label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.info-item .value {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+/* 主内容区 */
+.main-content {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: 1fr 400px;
+}
+
+/* 标签列表 */
+.tag-list-container {
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  padding: 20px;
+  max-height: 700px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.tag-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.tab-buttons {
+  display: flex;
+  gap: 15px;
+}
+
+.tab-buttons h3 {
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: color 0.2s;
+}
+
+.tab-buttons h3.active {
+  color: var(--text-primary);
+}
+
+.list-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.tag-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.tag-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+  margin-bottom: 4px;
+}
+
+.tag-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.tag-item.video {
+  border-left: 3px solid var(--accent);
+}
+
+.tag-item.audio {
+  border-left: 3px solid var(--success);
+}
+
+.tag-item.script {
+  border-left: 3px solid var(--warning);
+}
+
+.tag-item.keyframe {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.tag-type {
+  font-size: 12px;
+  font-weight: 500;
+  width: 50px;
+}
+
+.tag-timestamp {
+  font-family: monospace;
+  font-size: 13px;
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+.tag-size {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.tag-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--accent);
+  margin-left: 8px;
+}
+
+.tag-badge.seq {
+  background: var(--warning);
+}
+
+/* GOP 列表 */
+.gop-item {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.gop-item:last-child {
+  border-bottom: none;
+}
+
+.gop-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.gop-content {
+  flex: 1;
+}
+
+.gop-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.gop-info {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.gop-actions {
+  display: flex;
+  gap: 8px;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.gop-item:hover .gop-actions {
+  opacity: 1;
+}
+
+.gop-btn {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 14px;
+}
+
+.gop-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* 异常列表 */
+.anomalies-container {
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  padding: 20px;
+  margin-top: 24px;
+}
+
+.anomalies-container h3 {
+  margin-bottom: 16px;
+}
+
+.anomaly-item {
+  display: flex;
+  align-items: flex-start;
+  padding: 12px;
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+  margin-bottom: 8px;
+}
+
+.anomaly-item.warning {
+  border-left: 3px solid var(--warning);
+}
+
+.anomaly-item.error {
+  border-left: 3px solid var(--error);
+}
+
+.anomaly-item.info {
+  border-left: 3px solid var(--accent);
+}
+
+.anomaly-icon {
+  width: 24px;
+  height: 24px;
+  margin-right: 12px;
+  font-size: 16px;
+}
+
+.anomaly-content {
+  flex: 1;
+}
+
+.anomaly-type {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.anomaly-desc {
+  font-size: 14px;
+  margin-top: 4px;
+}

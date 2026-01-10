@@ -2,6 +2,8 @@
 
 FLV 视频文件分析工具 - 基于 Rust + WASM + React
 
+👉 **在线使用**: https://kira1928.github.io/video-analyzer/
+
 ## 功能
 
 - 📊 FLV 文件解析和结构分析

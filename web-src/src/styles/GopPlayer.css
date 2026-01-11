@@ -15,9 +15,8 @@
 .gop-player-modal {
   background: var(--bg-secondary);
   border-radius: 12px;
-  width: 95%;
-  max-width: 1200px;
-  max-height: 95vh;
+  width: 95vw;
+  height: 90vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -57,12 +56,21 @@
   background: var(--bg-tertiary);
 }
 
+.player-content-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
 .player-main {
   flex: 1;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+  position: relative;
 }
 
 .canvas-container {
@@ -77,9 +85,13 @@
 }
 
 canvas {
-  max-width: 100%;
-  max-height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
+  display: block;
 }
 
 .decoding-overlay {
@@ -233,4 +245,75 @@ canvas {
   padding: 20px;
   text-align: center;
   font-size: 16px;
+}
+
+.player-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.control-btn {
+  padding: 6px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s;
+  font-size: 13px;
+}
+
+.control-btn:hover {
+  background: var(--bg-primary);
+  border-color: var(--accent);
+}
+
+.control-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.1);
+}
+
+/* Vertical Video Layout Support */
+.player-sidebar {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.vertical-layout .player-content-wrapper {
+  flex-direction: row;
+}
+
+.vertical-layout .player-sidebar {
+  width: 320px;
+  border-left: 1px solid var(--border);
+}
+
+.vertical-layout .frame-gallery {
+  flex: 1;
+  border-top: none;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.vertical-layout .gallery-scroll {
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.vertical-layout .frame-thumb {
+  width: 100%;
+}
+
+.vertical-layout .frame-thumb img {
+  height: auto;
+  max-height: 160px;
+  background: black;
 }

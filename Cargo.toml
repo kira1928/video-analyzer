@@ -25,6 +25,10 @@ console_error_panic_hook = { version = "0.1", optional = true }
 wasm-bindgen-test = "0.3"
 
 [profile.release]
-# 优化 WASM 大小
+debug = false
 opt-level = "s"
 lto = true
+
+# 关键：强制保留 DWARF 调试信息 (仅限 Dev)
+[package.metadata.wasm-pack.profile.dev.wasm-bindgen]
+dwarf-debug-info = true

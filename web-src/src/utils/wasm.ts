@@ -10,6 +10,16 @@ interface WasmLoaderConfig {
   onStatusChange?: (status: WasmStatus, message?: string) => void;
 }
 
+function base64ToUint8Array(base64: string) {
+  const binaryString = window.atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
 // wasm-pack 生成的模块类型
 interface WasmModule {
   default: () => Promise<void>;
@@ -33,7 +43,33 @@ export async function loadWasm(config: WasmLoaderConfig = {}): Promise<void> {
 
   try {
     // 动态导入 wasm-pack 生成的模块
-    // Standalone 模式：如果已注入全局对象，直接使用
+
+    if (import.meta.env.STANDALONE) {
+      // Standalone 模式 (Vite): 使用内联 Base64 加载 WASM
+      const jsModule = await import(/* @vite-ignore */ '/pkg/video_analyzer.js');
+      const { default: wasmBase64 } = await import(/* @vite-ignore */ '/pkg/video_analyzer_bg.wasm?inline');
+
+      await jsModule.default(base64ToUint8Array(wasmBase64));
+
+      const module = jsModule as unknown as WasmModule;
+
+      // 设置全局模块引用
+      setWasmModule({
+        parseFLV: module.parseFLV,
+        getGOPTags: module.getGOPTags,
+        getTagDetail: module.getTagDetail,
+        isAnnexBFormat: module.isAnnexBFormat,
+        convertAnnexBToHVCC: module.convertAnnexBToHVCC,
+        convertAnnexBToAVCC: module.convertAnnexBToAVCC,
+        generateHEVCCodecString: module.generateHEVCCodecString,
+        getVersion: module.getVersion,
+      });
+
+      onStatusChange?.('ready', `WASM 已加载 (Standalone Vite)`);
+      return;
+    }
+
+    // Standalone 模式 (旧版脚本): 如果已注入全局对象，直接使用
     if ((window as any).__videoAnalyzerWasm) {
       const module = (window as any).__videoAnalyzerWasm;
       setWasmModule(module); // 仍然需要设置 hook 里的引用

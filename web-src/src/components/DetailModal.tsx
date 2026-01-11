@@ -1,26 +1,52 @@
 import { useState, useCallback, useEffect } from 'react';
 import { AnalysisResult, TagDetail, TagField, HexLine } from '../types';
 import { getTagDetail } from '../utils/wasm';
+import { loadFrame } from '../utils/gopCache';
 import './DetailModal.css';
 
 interface DetailModalProps {
-  result: AnalysisResult;
+  fileId: string;
   tagIndex: number;
+  result: AnalysisResult;
   fileData: Uint8Array;
   onClose: () => void;
-  onPreviewFrame?: (gopIndex: number, tagIndex: number) => void; // 预览帧回调
+  onPreviewFrame?: (gopIndex: number, tagIndex: number) => void;
 }
 
-/**
- * 标签详情弹窗组件
- * 左侧 Hex 视图，右侧属性树
- * 所有解析逻辑由 WASM 完成，前端只负责渲染
- */
-export function DetailModal({ result, tagIndex, fileData, onClose, onPreviewFrame }: DetailModalProps) {
+export function DetailModal({
+  fileId,
+  tagIndex,
+  result,
+  fileData,
+  onClose,
+  onPreviewFrame
+}: DetailModalProps) {
   const [detail, setDetail] = useState<TagDetail | null>(null);
   const [highlightRange, setHighlightRange] = useState<{ start: number; end: number } | null>(null);
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const [cachedImageUrl, setCachedImageUrl] = useState<string | null>(null);
+
+  // 加载缓存的预览图
+  useEffect(() => {
+    let url: string | null = null;
+    let active = true;
+
+    loadFrame(fileId, tagIndex).then(blob => {
+      if (!active) return;
+      if (blob) {
+        url = URL.createObjectURL(blob);
+        setCachedImageUrl(url);
+      } else {
+        setCachedImageUrl(null);
+      }
+    });
+
+    return () => {
+      active = false;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [fileId, tagIndex]);
 
   // 查找当前 Tag 所属的 GOP
   const currentTag = result.tags[tagIndex];
@@ -134,21 +160,39 @@ export function DetailModal({ result, tagIndex, fileData, onClose, onPreviewFram
           </div>
         </div>
 
+
+
         <div className="detail-actions">
-          {belongingGop && onPreviewFrame && (
-            <button
-              className="btn btn-primary"
-              onClick={() => onPreviewFrame(belongingGop.index, tagIndex)}
-            >
-              🎬 预览帧画面
-            </button>
+          {belongingGop && (
+            <div className="preview-section" style={{ marginBottom: '10px', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              {cachedImageUrl ? (
+                <div className="cached-preview">
+                  <img src={cachedImageUrl} alt="Frame Preview" style={{ maxWidth: '100%', maxHeight: '300px', border: '1px solid #444' }} />
+                  <div style={{ marginTop: '5px', fontSize: '12px', color: '#888' }}>
+                    (已缓存画面 - <span className="link-btn" onClick={() => onPreviewFrame && onPreviewFrame(belongingGop.index, tagIndex)} style={{ cursor: 'pointer', textDecoration: 'underline' }}>在播放器中打开</span>)
+                  </div>
+                </div>
+              ) : (
+                onPreviewFrame && (
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => onPreviewFrame(belongingGop.index, tagIndex)}
+                  >
+                    🎬 预览帧画面
+                  </button>
+                )
+              )}
+            </div>
           )}
-          <button className="btn btn-success" onClick={() => saveTagData(detail, fileData, false)}>
-            💾 保存二进制数据
-          </button>
-          <button className="btn btn-secondary" onClick={() => saveTagData(detail, fileData, true)}>
-            📦 保存完整 Tag
-          </button>
+
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button className="btn btn-success" onClick={() => saveTagData(detail, fileData, false)}>
+              💾 保存二进制数据
+            </button>
+            <button className="btn btn-secondary" onClick={() => saveTagData(detail, fileData, true)}>
+              📦 保存完整 Tag
+            </button>
+          </div>
         </div>
       </div>
     </div>

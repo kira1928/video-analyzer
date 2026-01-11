@@ -70,6 +70,44 @@ video-analyzer/
 └── web/                # 构建输出
 ```
 
+## 🐛 调试 Rust (WASM) 源码
+
+本项目支持在 Chrome 浏览器中直接调试 Rust 源代码。
+
+### 1. 安装 Chrome 扩展
+
+安装官方扩展 [C/C++ DevTools Support (DWARF)](https://chromewebstore.google.com/detail/cc++-devtools-support-dwa/pdcpmagijalfljmkmjngeonclgbbannb)。
+
+### 2. 启动调试模式
+
+使用以下命令启动开发服务器，这会自动构建包含调试信息 (DWARF) 的 WASM：
+
+```bash
+make dev
+```
+
+### 3. 配置路径映射
+
+1. 打开 Chrome DevTools (F12)。
+2. 转到 **Settings** (齿轮图标) -> **Experiments**，确保勾选了 "WebAssembly Debugging: Enable DWARF support"。
+3. 转到 **Extensions** 选项卡（或者搜索 "C/C++ DevTools Support Options"）。
+4. 在 **Path substitutions** 中添加一条规则：
+
+| Old prefix | New prefix |
+|------------|------------|
+| `/` | `http://localhost:5173/` |
+
+*这就告诉 Chrome：当遇到 WASM 中的任何绝对路径（如 `/rust-root/...`）时，去开发服务器的对应 URL 寻找源码。*
+
+### 4. 开始调试
+
+1. 访问 http://localhost:5173
+2. 打开 DevTools -> **Sources** 面板。
+3. 按 `Ctrl+P` (Mac: `Cmd+P`)，输入 Rust 文件名（如 `lib.rs` 或 `analyzer.rs`）。
+4. 你现在可以在 Rust 源码中设置断点并进行单步调试了！
+
+> **注意**: Windows 环境下，项目构建脚本会自动将本地路径重映射为 `/rust-root`，确保跨平台开发体验一致。
+
 ## 许可证
 
 MIT

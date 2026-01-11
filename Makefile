@@ -3,47 +3,38 @@
 # 默认目标
 all: build-wasm build-web
 
-# 构建 Rust 库
+# 构建 Rust 库 (Release)
 build:
 	cargo build --release
 
-# 构建 WASM 模块 (使用 wasm-pack)
+# 构建 WASM 模块 (Release - 无调试信息)
 build-wasm:
-	wasm-pack build --target web --out-dir web/pkg --out-name video_analyzer
-	@echo "WASM 构建完成: web/pkg/"
+	node scripts/build.js wasm --release
+
+# 构建 WASM 模块 (Debug - 包含 DWARF)
+build-wasm-debug:
+	node scripts/build.js wasm --dev
 
 # 构建前端 (TypeScript)
 build-web:
-	cd web-src && npm run build
+	node scripts/build.js web
 
-# 启动开发服务器
-dev: build-wasm
-	cd web-src && npm run dev
+# 启动开发服务器 (自动使用 Debug 模式)
+dev: build-wasm-debug
+	node scripts/build.js dev
 
-# 构建单文件 HTML
-standalone: build-wasm build-web
-	node web-src/scripts/build-standalone.mjs
+# 启动开发服务器 (Release 模式测试)
+dev-release: build-wasm
+	node scripts/build.js dev
 
 # 清理构建产物
 clean:
-	cargo clean
-	rm -rf web/pkg web/assets web/index.html
-
-# 帮助信息
-help:
-	@echo "Video Analyzer 构建命令"
-	@echo ""
-	@echo "  make build      - 构建 Rust 库"
-	@echo "  make build-wasm - 构建 WASM 模块"
-	@echo "  make build-web  - 构建前端"
-	@echo "  make all        - 完整构建"
-	@echo "  make dev        - 启动开发服务器"
-	@echo "  make clean      - 清理构建产物"
+	node scripts/build.js clean
 
 # 安装前端依赖
 install-web:
 	cd web-src && npm install
 
-# 前端开发服务器
-dev-web:
-	cd web-src && npm run dev
+# 帮助信息
+help:
+	node scripts/build.js help

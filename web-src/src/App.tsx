@@ -14,6 +14,7 @@ function App() {
 
   // 文件数据
   const [fileData, setFileData] = useState<Uint8Array | null>(null);
+  const [fileId, setFileId] = useState<string>('');
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
@@ -22,6 +23,23 @@ function App() {
   const [selectedTagIndex, setSelectedTagIndex] = useState<number | null>(null);
   const [playingGop, setPlayingGop] = useState<any | null>(null);
   const [initialTagForGop, setInitialTagForGop] = useState<number | undefined>(undefined);
+  const [autoPlayNext, setAutoPlayNext] = useState(false);
+
+  const handleNextGop = useCallback(() => {
+    if (!playingGop || !analysisResult) return;
+    const idx = analysisResult.gops.findIndex((g: any) => g.index === playingGop.index);
+    if (idx !== -1 && idx < analysisResult.gops.length - 1) {
+      setPlayingGop(analysisResult.gops[idx + 1]);
+    }
+  }, [playingGop, analysisResult]);
+
+  const handlePrevGop = useCallback(() => {
+    if (!playingGop || !analysisResult) return;
+    const idx = analysisResult.gops.findIndex((g: any) => g.index === playingGop.index);
+    if (idx > 0) {
+      setPlayingGop(analysisResult.gops[idx - 1]);
+    }
+  }, [playingGop, analysisResult]);
 
   // 加载 WASM
   useEffect(() => {
@@ -47,6 +65,8 @@ function App() {
       const buffer = await file.arrayBuffer();
       const data = new Uint8Array(buffer);
       setFileData(data);
+      const fid = `${file.name}-${file.size}-${file.lastModified}`;
+      setFileId(fid);
 
       const result = parseFLV(data);
       setAnalysisResult(result);
@@ -171,7 +191,33 @@ function App() {
                 </div>
                 <span className="list-status">
                   {activeTab === 'gop'
-                    ? `共 ${analysisResult.gops.length} 个 GOP`
+                    ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span>共 {analysisResult.gops.length} 个 GOP</span>
+                        <button
+                          onClick={() => {
+                            if (analysisResult.gops.length > 0) {
+                              setPlayingGop(analysisResult.gops[0]);
+                              setAutoPlayNext(true);
+                            }
+                          }}
+                          style={{
+                            padding: '4px 10px',
+                            fontSize: '12px',
+                            cursor: 'pointer',
+                            background: 'var(--accent)',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}
+                        >
+                          <span style={{ fontSize: '10px' }}>▶</span> 播放全部
+                        </button>
+                      </div>
+                    )
                     : `共 ${analysisResult.tags.length} 个标签`
                   }
                 </span>
@@ -237,40 +283,49 @@ function App() {
         </>
       )}
 
-      {/* 详情弹窗 */}
+      {/* GOP 播放器 */}
+      {playingGop && analysisResult && fileData && (
+        <GopPlayer
+          fileId={fileId}
+          gop={playingGop}
+          fileData={fileData}
+          analysisResult={analysisResult}
+          autoPlayNext={autoPlayNext}
+          onAutoPlayChange={setAutoPlayNext}
+          onNextGop={handleNextGop}
+          onPrevGop={handlePrevGop}
+          onClose={() => {
+            setPlayingGop(null);
+            setInitialTagForGop(undefined);
+            setAutoPlayNext(false);
+          }}
+          onTagSelect={(tagIndex) => {
+            // 不关闭播放器，直接打开详情遮罩
+            // setPlayingGop(null); 
+            setInitialTagForGop(undefined);
+            setSelectedTagIndex(tagIndex);
+          }}
+          initialTagIndex={initialTagForGop}
+        />
+      )}
+
+      {/* 详情弹窗 (Z-Index likely higher, renders on top) */}
       {selectedTagIndex !== null && analysisResult && fileData && (
         <DetailModal
+          fileId={fileId}
           result={analysisResult}
           tagIndex={selectedTagIndex}
           fileData={fileData}
           onClose={() => setSelectedTagIndex(null)}
           onPreviewFrame={(gopIndex, tagIdx) => {
-            // 找到对应的 GOP 并打开播放器
+            // 找到对应的 GOP 并打开播放器 (如果已打开则保持)
             const gop = analysisResult.gops[gopIndex];
             if (gop) {
               setSelectedTagIndex(null); // 关闭详情弹窗
-              setInitialTagForGop(tagIdx); // 设置初始选中的帧
-              setPlayingGop(gop); // 打开 GOP 播放器
+              setInitialTagForGop(tagIdx); // 设置跳转目标
+              setPlayingGop(gop); // 确保播放器显示
             }
           }}
-        />
-      )}
-      {/* GOP 播放器 */}
-      {playingGop && analysisResult && fileData && (
-        <GopPlayer
-          gop={playingGop}
-          fileData={fileData}
-          analysisResult={analysisResult}
-          onClose={() => {
-            setPlayingGop(null);
-            setInitialTagForGop(undefined);
-          }}
-          onTagSelect={(tagIndex) => {
-            setPlayingGop(null); // 关闭播放器
-            setInitialTagForGop(undefined);
-            setSelectedTagIndex(tagIndex); // 打开 Tag 详情
-          }}
-          initialTagIndex={initialTagForGop}
         />
       )}
     </div>

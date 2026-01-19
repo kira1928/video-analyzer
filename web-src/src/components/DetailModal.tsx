@@ -105,6 +105,9 @@ export function DetailModal({
   const belongingGop = currentTag
     ? result.gops.find(g => tagIndex >= g.startIndex && tagIndex <= g.endIndex)
     : null;
+  const belongingGopIndex = (typeof currentTag?.gopIndex === 'number')
+    ? currentTag.gopIndex
+    : (belongingGop ? belongingGop.index : null);
 
   // 存储本地读取的数据（流式模式用）
   const [localFileData, setLocalFileData] = useState<Uint8Array | null>(null);
@@ -368,20 +371,20 @@ export function DetailModal({
 
 
         <div className="detail-actions">
-          {belongingGop && (
+          {belongingGopIndex !== null && (
             <div className="preview-section" style={{ marginBottom: '10px', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               {cachedImageUrl ? (
                 <div className="cached-preview">
                   <img src={cachedImageUrl} alt="Frame Preview" style={{ maxWidth: '100%', maxHeight: '300px', border: '1px solid #444' }} />
                   <div style={{ marginTop: '5px', fontSize: '12px', color: '#888' }}>
-                    (已缓存画面 - <span className="link-btn" onClick={() => onPreviewFrame && onPreviewFrame(belongingGop.index, tagIndex)} style={{ cursor: 'pointer', textDecoration: 'underline' }}>在播放器中打开</span>)
+                    (已缓存画面 - <span className="link-btn" onClick={() => onPreviewFrame && onPreviewFrame(belongingGopIndex, tagIndex)} style={{ cursor: 'pointer', textDecoration: 'underline' }}>在播放器中打开</span>)
                   </div>
                 </div>
               ) : (
                 onPreviewFrame && (
                   <button
                     className="btn btn-primary"
-                    onClick={() => onPreviewFrame(belongingGop.index, tagIndex)}
+                    onClick={() => onPreviewFrame(belongingGopIndex, tagIndex)}
                   >
                     🎬 预览帧画面
                   </button>

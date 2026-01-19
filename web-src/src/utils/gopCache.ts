@@ -357,3 +357,97 @@ export async function loadFrame(fileId: string, tagIndex: number): Promise<Blob 
   const frame = await loadCachedFrame(fileId, tagIndex);
   return frame ? frame.blob : null;
 }
+
+/**
+ * 批量查询缓存帧 - 使用单个 IndexedDB 事务批量查询多个帧
+ * 这对于大文件（如 30GB MP4）非常重要，避免为每个帧单独打开事务
+ * 
+ * @param fileId 文件唯一标识
+ * @param tagIndices 要查询的 tag 索引数组
+ * @returns 与 tagIndices 对应的 CachedFrame 数组（未找到的为 null）
+ */
+export async function loadCachedFramesBatch(
+  fileId: string,
+  tagIndices: number[]
+): Promise<(CachedFrame | null)[]> {
+  // 如果缓存被禁用，直接返回全 null 数组
+  if (!cacheEnabled) {
+    return tagIndices.map(() => null);
+  }
+
+  if (tagIndices.length === 0) {
+    return [];
+  }
+
+  try {
+    const db = await openDB();
+
+    // 使用单个事务批量查询所有元数据
+    const metas = await new Promise<(CachedFrameMeta | null)[]>((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const results: (CachedFrameMeta | null)[] = new Array(tagIndices.length).fill(null);
+      let completed = 0;
+      let hasError = false;
+
+      transaction.onerror = () => {
+        if (!hasError) {
+          hasError = true;
+          reject(transaction.error);
+        }
+      };
+
+      tagIndices.forEach((tagIndex, i) => {
+        const request = store.get([fileId, tagIndex]);
+        request.onsuccess = () => {
+          const meta = request.result as CachedFrameMeta | undefined;
+          if (meta) {
+            // 更新时间戳
+            meta.timestamp = Date.now();
+            store.put(meta);
+            results[i] = meta;
+          }
+          completed++;
+          if (completed === tagIndices.length) {
+            resolve(results);
+          }
+        };
+        request.onerror = () => {
+          completed++;
+          if (completed === tagIndices.length) {
+            resolve(results);
+          }
+        };
+      });
+    });
+
+    // 批量从 OPFS 加载 Blob 和缩略图
+    const frames = await Promise.all(
+      metas.map(async (meta, i): Promise<CachedFrame | null> => {
+        if (!meta) return null;
+        try {
+          const { blob, thumbnail } = await loadFromOpfs(
+            fileId, 
+            tagIndices[i], 
+            meta.hasThumbnail
+          );
+          return {
+            fileId: meta.fileId,
+            tagIndex: meta.tagIndex,
+            blob,
+            thumbnail,
+            timestamp: meta.timestamp
+          };
+        } catch (e) {
+          // OPFS 文件丢失，返回 null
+          return null;
+        }
+      })
+    );
+
+    return frames;
+  } catch (e) {
+    console.warn('批量加载缓存失败:', e);
+    return tagIndices.map(() => null);
+  }
+}

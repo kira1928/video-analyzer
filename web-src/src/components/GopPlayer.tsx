@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { AnalysisResult, Gop, TagSummary } from '../types';
 import { getWasmModule } from '../utils/wasm';
 import { formatDuration } from '../utils/format';
 import { saveFrame, loadFrame, loadCachedFrame, saveAudioBuffer, loadAudioBuffer } from '../utils/gopCache';
+import { wasmWorker } from '../workers/wasmWorkerManager';
 import '../styles/GopPlayer.css';
 
 interface GopPlayerProps {
   fileId: string;
   gop: Gop;
-  fileData: Uint8Array;
+  fileData: Uint8Array | null;
   analysisResult: AnalysisResult;
   onClose: () => void;
   onTagSelect?: (tagIndex: number) => void; // 点击帧时选择对应的 Tag
@@ -18,6 +19,7 @@ interface GopPlayerProps {
   onNextGop?: (autoPlay?: boolean) => void;
   onPrevGop?: () => void;
   autoPlayStart?: boolean;
+  isStreamingMode?: boolean;
 }
 
 interface FrameThumbnail {
@@ -39,7 +41,8 @@ export function GopPlayer({
   onAutoPlayChange,
   onNextGop,
   onPrevGop,
-  autoPlayStart
+  autoPlayStart,
+  isStreamingMode = false
 }: GopPlayerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [currentFrame, setCurrentFrame] = useState(0);
@@ -51,6 +54,17 @@ export function GopPlayer({
   const [isDecoding, setIsDecoding] = useState(true);
   const [isVertical, setIsVertical] = useState(false);
   const [isFrameHiResReady, setIsFrameHiResReady] = useState(false);
+  const [gopTags, setGopTags] = useState<TagSummary[]>([]);
+  const [isLoadingGopTags, setIsLoadingGopTags] = useState(false);
+
+  const gopVideoTags = useMemo(
+    () => gopTags.filter(t => t.type === 'video' && !t.isSeqHeader),
+    [gopTags]
+  );
+  const gopAudioTags = useMemo(
+    () => gopTags.filter(t => t.type === 'audio' && !t.isSeqHeader),
+    [gopTags]
+  );
 
 
   const decoderRef = useRef<VideoDecoder | null>(null);
@@ -66,6 +80,7 @@ export function GopPlayer({
   const galleryRef = useRef<HTMLDivElement>(null);
   const currentDisplayTagRef = useRef<number | null>(null);
   const autoPlayStartRef = useRef(false);
+  const formatLower = (analysisResult.format || '').toLowerCase();
 
   const drawImageToCanvas = useCallback((src: string, revoke: boolean = false) => {
     if (!canvasRef.current) return;
@@ -130,12 +145,60 @@ export function GopPlayer({
     }
   }, [selectedThumbnail]);
 
+  // 加载当前 GOP 的 Tag 列表（流式模式从 WASM 缓存拉取）
+  // 注意：依赖数组只使用稳定的原始类型（字符串、数字、布尔），避免对象引用变化导致无限循环
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadGopTags = async () => {
+      setIsLoadingGopTags(true);
+      setError(null);
+      setIsDecoding(true);
+      setThumbnails([]);
+      setSelectedThumbnail(null);
+      setCurrentFrame(0);
+      setGopTags([]);
+
+      try {
+        let tags: TagSummary[];
+        if (isStreamingMode) {
+          if (!fileId) {
+            throw new Error('缺少文件标识，无法加载 GOP 数据');
+          }
+          const count = Math.max(0, gop.endIndex - gop.startIndex + 1);
+          tags = count > 0 ? await wasmWorker.getSamplesBatch(fileId, gop.startIndex, count) : [];
+        } else {
+          // 非流式模式：从 analysisResult.tags 中筛选当前 GOP 的 tags
+          tags = analysisResult.tags.filter(
+            t => t.index >= gop.startIndex && t.index <= gop.endIndex
+          );
+        }
+
+        if (!cancelled) {
+          setGopTags(tags);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setGopTags([]);
+          setError(e instanceof Error ? e.message : String(e));
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoadingGopTags(false);
+        }
+      }
+    };
+
+    loadGopTags();
+
+    return () => {
+      cancelled = true;
+    };
+    // 重要：只依赖稳定的属性，不依赖 analysisResult.tags 数组本身（引用会变化）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileId, gop.startIndex, gop.endIndex, gop.index, isStreamingMode]);
 
 
-  // 获取该 GOP 的视频 Tag 列表
-  const gopVideoTags = analysisResult.tags.filter(
-    t => t.index >= gop.startIndex && t.index <= gop.endIndex && t.type === 'video' && !t.isSeqHeader
-  );
 
   // ESC 关闭
   useEffect(() => {
@@ -366,6 +429,10 @@ export function GopPlayer({
 
   // 初始化解码器和数据
   useEffect(() => {
+    if (isLoadingGopTags) {
+      return;
+    }
+
     const controller = new AbortController();
     const signal = controller.signal;
 
@@ -392,62 +459,66 @@ export function GopPlayer({
         let skipVideoDecode = false;
 
         // 1. 尝试从缓存完全恢复
-        try {
-          const cachePromises = gopVideoTags.map(t => loadCachedFrame(fileId, t.index));
-          const cachedFrames = await Promise.all(cachePromises);
+        // 注意：大文件流式模式下跳过缓存检查（避免为每个帧查询 IndexedDB）
+        // GOP 通常只有几十帧，这里的缓存检查是可行的
+        if (!isStreamingMode && gopVideoTags.length <= 300) {
+          try {
+            const { loadCachedFramesBatch } = await import('../utils/gopCache');
+            const cachedFrames = await loadCachedFramesBatch(fileId, gopVideoTags.map(t => t.index));
 
-          if (cachedFrames.every(f => f !== null)) {
-            console.log("🔥 GOP 缓存命中，跳过视频解码");
-            const loadedThumbs: FrameThumbnail[] = [];
+            if (cachedFrames.every(f => f !== null)) {
+              console.log("🔥 GOP 缓存命中，跳过视频解码");
+              const loadedThumbs: FrameThumbnail[] = [];
 
-            await Promise.all(cachedFrames.map(async (frame, i) => {
-              if (!frame) return;
-              const tag = gopVideoTags[i];
-              let imageData = frame.thumbnail;
+              await Promise.all(cachedFrames.map(async (frame, i) => {
+                if (!frame) return;
+                const tag = gopVideoTags[i];
+                let imageData = frame.thumbnail;
 
-              if (!imageData) {
-                const bmp = await createImageBitmap(frame.blob);
-                if (i === 0) {
-                  const isVert = bmp.height > bmp.width;
-                  console.log(`Cache: First frame size ${bmp.width}x${bmp.height}. Vertical? ${isVert}`);
-                  setIsVertical(isVert);
+                if (!imageData) {
+                  const bmp = await createImageBitmap(frame.blob);
+                  if (i === 0) {
+                    const isVert = bmp.height > bmp.width;
+                    console.log(`Cache: First frame size ${bmp.width}x${bmp.height}. Vertical? ${isVert}`);
+                    setIsVertical(isVert);
+                  }
+                  const thumbCanvas = document.createElement('canvas');
+                  const scale = 80 / Math.max(bmp.width, bmp.height);
+                  thumbCanvas.width = Math.round(bmp.width * scale);
+                  thumbCanvas.height = Math.round(bmp.height * scale);
+                  const ctx = thumbCanvas.getContext('2d');
+                  if (ctx) ctx.drawImage(bmp, 0, 0, thumbCanvas.width, thumbCanvas.height);
+                  imageData = thumbCanvas.toDataURL('image/jpeg', 0.6);
+                  bmp.close();
                 }
-                const thumbCanvas = document.createElement('canvas');
-                const scale = 80 / Math.max(bmp.width, bmp.height);
-                thumbCanvas.width = Math.round(bmp.width * scale);
-                thumbCanvas.height = Math.round(bmp.height * scale);
-                const ctx = thumbCanvas.getContext('2d');
-                if (ctx) ctx.drawImage(bmp, 0, 0, thumbCanvas.width, thumbCanvas.height);
-                imageData = thumbCanvas.toDataURL('image/jpeg', 0.6);
-                bmp.close();
+
+                loadedThumbs[i] = {
+                  tagIndex: tag.index,
+                  timestamp: tag.timestamp,
+                  isKeyframe: tag.isKeyframe,
+                  imageData: imageData!
+                };
+              }));
+
+              thumbnailsRef.current = loadedThumbs;
+              setThumbnails(loadedThumbs);
+              setIsDecoding(false);
+              skipVideoDecode = true;
+
+              // Jump to initial tag
+              if (initialTagIndex !== undefined) {
+                const idx = loadedThumbs.findIndex(t => t.tagIndex === initialTagIndex);
+                if (idx !== -1) {
+                  setTimeout(() => handleThumbnailClick(initialTagIndex, idx), 50);
+                }
+              } else if (loadedThumbs.length > 0) {
+                // 显示第一帧，但不自动播放（等待用户点击播放按钮）
+                setTimeout(() => handleThumbnailClick(loadedThumbs[0].tagIndex, 0), 50);
               }
-
-              loadedThumbs[i] = {
-                tagIndex: tag.index,
-                timestamp: tag.timestamp,
-                isKeyframe: tag.isKeyframe,
-                imageData: imageData!
-              };
-            }));
-
-            thumbnailsRef.current = loadedThumbs;
-            setThumbnails(loadedThumbs);
-            setIsDecoding(false);
-            skipVideoDecode = true;
-
-            // Jump to initial tag
-            if (initialTagIndex !== undefined) {
-              const idx = loadedThumbs.findIndex(t => t.tagIndex === initialTagIndex);
-              if (idx !== -1) {
-                setTimeout(() => handleThumbnailClick(initialTagIndex, idx), 50);
-              }
-            } else if (loadedThumbs.length > 0) {
-              // 显示第一帧，但不自动播放（等待用户点击播放按钮）
-              setTimeout(() => handleThumbnailClick(loadedThumbs[0].tagIndex, 0), 50);
             }
+          } catch (e) {
+            console.warn("读取缓存失败:", e);
           }
-        } catch (e) {
-          console.warn("读取缓存失败:", e);
         }
 
         if (!skipVideoDecode) {
@@ -458,7 +529,11 @@ export function GopPlayer({
           let description: Uint8Array | undefined;
 
           // 检查文件格式，决定如何获取解码配置
-          const isMP4OrTS = analysisResult.format === 'MP4' || analysisResult.format === 'TS';
+          const isMP4OrTS = formatLower === 'mp4' || formatLower === 'ts';
+
+          if (!fileData && !isMP4OrTS) {
+            throw new Error('流式模式暂不支持 FLV GOP 预览');
+          }
 
           if (isMP4OrTS) {
             // MP4/TS 格式：使用 videoInitData (avcC/hvcC)
@@ -520,13 +595,14 @@ export function GopPlayer({
           }
           else {
             // FLV 格式：从 Sequence Header 获取配置
+            // 注意：到达这里时 fileData 必定不为 null（前面已检查过）
             const seqHeaderTag = analysisResult.tags.find(t => t.type === 'video' && t.isSeqHeader);
             if (!seqHeaderTag) {
               throw new Error("未找到视频 Sequence Header");
             }
 
             const seqHeaderOffset = seqHeaderTag.offset + 11;
-            const seqHeaderData = fileData.subarray(seqHeaderOffset, seqHeaderOffset + seqHeaderTag.size);
+            const seqHeaderData = fileData!.subarray(seqHeaderOffset, seqHeaderOffset + seqHeaderTag.size);
             const codecId = seqHeaderData[0] & 0x0f;
             const configData = seqHeaderData.subarray(5);
 
@@ -653,15 +729,14 @@ export function GopPlayer({
           decoderRef.current = decoder;
 
           // 解码所有帧
-          await decodeGop(decoder, gopVideoTags, fileData, wasm, signal);
+          const sampleProvider = (!fileData && isStreamingMode)
+            ? async (tag: TagSummary) => wasmWorker.readSampleData(fileId, tag.index)
+            : undefined;
+          await decodeGop(decoder, gopVideoTags, fileData, wasm, signal, sampleProvider);
         }
 
         // === 音频解码逻辑 (始终尝试解码) ===
-        const gopAudioTags = analysisResult.tags.filter(
-          t => t.index >= gop.startIndex && t.index <= gop.endIndex && t.type === 'audio' && !t.isSeqHeader
-        );
-
-        if (gopAudioTags.length > 0 && 'AudioDecoder' in window) {
+        if (fileData && gopAudioTags.length > 0 && 'AudioDecoder' in window) {
           try {
             if (!audioCtxRef.current) {
               audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -797,11 +872,33 @@ export function GopPlayer({
       frameQueueRef.current.forEach(f => f.close());
       frameQueueRef.current = [];
     };
+    // 使用 gopVideoTags 和 gopAudioTags 的长度作为依赖，避免数组引用变化导致无限循环
+    // 重要：不依赖 analysisResult 对象本身，只依赖其内部的稳定属性
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gop.index]);
+  }, [
+    drawBlobToCanvas,
+    drawThumbnailToCanvas,
+    fileData,
+    fileId,
+    formatLower,
+    gopAudioTags.length,  // 只依赖长度，避免对象引用变化
+    gopVideoTags.length,  // 只依赖长度，避免对象引用变化
+    handleThumbnailClick,
+    initialTagIndex,
+    isLoadingGopTags,
+    isStreamingMode,
+    gop.index  // 添加 gop.index 确保 GOP 切换时重新初始化
+  ]);
 
   // 解码 GOP
-  const decodeGop = async (decoder: VideoDecoder, tags: TagSummary[], data: Uint8Array, wasm: any, signal: AbortSignal) => {
+  const decodeGop = async (
+    decoder: VideoDecoder,
+    tags: TagSummary[],
+    data: Uint8Array | null,
+    wasm: any,
+    signal: AbortSignal,
+    getSampleData?: (tag: TagSummary) => Promise<Uint8Array>
+  ) => {
     let frameIndex = 0;
     let decodedCount = 0;
     let skippedCount = 0;
@@ -809,7 +906,7 @@ export function GopPlayer({
     console.log(`开始解码 GOP, 共 ${tags.length} 个视频 Tag`);
 
     // 检测格式
-    const isMP4OrTS = analysisResult.format === 'MP4' || analysisResult.format === 'TS';
+    const isMP4OrTS = formatLower === 'mp4' || formatLower === 'ts';
     console.log(`解码模式: ${isMP4OrTS ? 'MP4/TS' : 'FLV'}`);
 
     // 1. 预计算所有帧的 PTS 和 Duration
@@ -832,11 +929,12 @@ export function GopPlayer({
       }
     } else {
       // FLV: 从 tag 数据解析 CTS
+      // 注意：data 在 FLV 模式下必定不为 null（函数调用前已检查）
       for (const tag of tags) {
         const offset = tag.offset + 11; // Tag Header 11 bytes
-        if (offset + 5 > data.length) continue;
+        if (offset + 5 > data!.length) continue;
 
-        const p = data.subarray(offset, offset + 5);
+        const p = data!.subarray(offset, offset + 5);
         if (p[1] !== 1) continue; // 只计算 NALU
 
         const cts = (p[2] << 16) | (p[3] << 8) | p[4];
@@ -888,7 +986,13 @@ export function GopPlayer({
 
         if (isMP4OrTS) {
           // MP4/TS: 数据直接在 offset 位置，已经是 AVCC/HVCC 格式
-          naluData = data.subarray(tag.offset, tag.offset + tag.size);
+          if (data) {
+            naluData = data.subarray(tag.offset, tag.offset + tag.size);
+          } else if (getSampleData) {
+            naluData = await getSampleData(tag);
+          } else {
+            throw new Error('无法读取 MP4 Sample 数据');
+          }
 
           // 使用预计算的元数据
           const meta = frameMetaMap.get(tag.index);
@@ -901,8 +1005,15 @@ export function GopPlayer({
           }
         } else {
           // FLV: 需要解析 tag header
-          const tagDataOffset = tag.offset + 11;
-          const videoTagData = data.subarray(tagDataOffset, tagDataOffset + tag.size);
+          let videoTagData: Uint8Array;
+          if (data) {
+            const tagDataOffset = tag.offset + 11;
+            videoTagData = data.subarray(tagDataOffset, tagDataOffset + tag.size);
+          } else if (getSampleData) {
+            videoTagData = await getSampleData(tag);
+          } else {
+            throw new Error('无法读取 FLV Tag 数据');
+          }
 
           const codecId = videoTagData[0] & 0x0f;
           const avcPacketType = videoTagData[1];
@@ -1042,7 +1153,7 @@ export function GopPlayer({
               {!error && !isFrameHiResReady && !isPlaying && (
                 <div className="decoding-overlay">
                   <div className="spinner" />
-                  <span>解码中</span>
+                  <span>{isLoadingGopTags ? '加载 GOP 数据...' : '解码中'}</span>
                 </div>
               )}
             </div>
@@ -1091,10 +1202,10 @@ export function GopPlayer({
 
                 {/* Next/Prev GOP Controls */}
                 <div className="gop-nav-controls" style={{ display: 'flex', gap: '4px' }}>
-                  <button className="control-btn" onClick={onPrevGop} disabled={!onPrevGop} title="上一个 GOP">
+                  <button className="control-btn" onClick={() => onPrevGop?.()} disabled={!onPrevGop} title="上一个 GOP">
                     ⏮
                   </button>
-                  <button className="control-btn" onClick={onNextGop} disabled={!onNextGop} title="下一个 GOP">
+                  <button className="control-btn" onClick={() => onNextGop?.()} disabled={!onNextGop} title="下一个 GOP">
                     ⏭
                   </button>
                 </div>

@@ -93,6 +93,25 @@ impl StreamingFlvParser {
         self.build_result()
     }
 
+    /// 解析并直接缓存结果到 WASM 端，只返回元数据
+    /// 这是性能优化版本 - 避免将完整结果序列化到 JS 再反序列化回来
+    #[wasm_bindgen(js_name = parseAndCache)]
+    pub async fn parse_and_cache(&mut self, file_id: String) -> Result<JsValue, JsError> {
+        // 读取并验证 FLV 头部
+        self.parse_header().await?;
+
+        // 扫描所有 tag
+        self.scan_tags().await?;
+
+        // 构建结果并直接缓存到 Rust HashMap（不经过 JS）
+        let result = self.build_result_internal()?;
+        crate::cache::cache_result_internal(file_id.clone(), result);
+
+        // 只返回元数据
+        crate::cache::get_metadata(file_id)
+            .map_err(|e| JsError::new(&format!("获取元数据失败: {:?}", e)))
+    }
+
     /// 获取 tag 总数
     #[wasm_bindgen(getter)]
     pub fn tag_count(&self) -> usize {
@@ -461,5 +480,162 @@ impl StreamingFlvParser {
 
         serde_wasm_bindgen::to_value(&result_mut)
             .map_err(|e| JsError::new(&format!("序列化结果失败: {}", e)))
+    }
+
+    /// 构建分析结果（内部版本，返回 Rust 结构体）
+    fn build_result_internal(&self) -> Result<AnalysisResult, JsError> {
+        let mut tags = Vec::new();
+        let mut video_timeline = Vec::new();
+        let mut audio_timeline = Vec::new();
+        let mut gops = Vec::new();
+        let mut video_tag_count = 0usize;
+        let mut audio_tag_count = 0usize;
+        let mut script_tag_count = 0usize;
+        let mut keyframe_count = 0usize;
+        let mut current_gop_start: Option<usize> = None;
+        let mut gop_start_time = 0.0f64;
+
+        for (idx, tag) in self.tags.iter().enumerate() {
+            let is_video = tag.tag_type == TAG_TYPE_VIDEO;
+            let is_audio = tag.tag_type == TAG_TYPE_AUDIO;
+            let is_script = tag.tag_type == TAG_TYPE_SCRIPT;
+
+            let gop_index = if is_video {
+                if tag.is_keyframe && !tag.is_seq_header && current_gop_start.is_some() {
+                    let prev_gop_start = current_gop_start.unwrap();
+                    let gop_frame_count = video_tag_count - prev_gop_start;
+                    if !gops.is_empty() {
+                        let last_gop: &mut Gop = gops.last_mut().unwrap();
+                        last_gop.end_index = idx.saturating_sub(1);
+                        last_gop.frame_count = gop_frame_count;
+                        last_gop.duration = tag.timestamp as f64 / 1000.0 - gop_start_time;
+                    }
+                }
+                if tag.is_keyframe && !tag.is_seq_header {
+                    current_gop_start = Some(video_tag_count);
+                    gop_start_time = tag.timestamp as f64 / 1000.0;
+                    gops.push(Gop {
+                        index: gops.len(),
+                        start_index: idx,
+                        end_index: idx,
+                        start_time: gop_start_time,
+                        duration: 0.0,
+                        frame_count: 0,
+                    });
+                }
+                if current_gop_start.is_some() {
+                    Some(gops.len().saturating_sub(1) as i32)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if is_video {
+                video_tag_count += 1;
+                if tag.is_keyframe && !tag.is_seq_header {
+                    keyframe_count += 1;
+                }
+                video_timeline.push(TimelinePoint {
+                    index: idx,
+                    timestamp: tag.timestamp as f64 / 1000.0,
+                    dts: tag.timestamp as f64 / 1000.0,
+                    pts: tag.timestamp as f64 / 1000.0,
+                    duration: None,
+                });
+            } else if is_audio {
+                audio_tag_count += 1;
+                audio_timeline.push(TimelinePoint {
+                    index: idx,
+                    timestamp: tag.timestamp as f64 / 1000.0,
+                    dts: tag.timestamp as f64 / 1000.0,
+                    pts: tag.timestamp as f64 / 1000.0,
+                    duration: None,
+                });
+            } else if is_script {
+                script_tag_count += 1;
+            }
+
+            let tag_type_str = match tag.tag_type {
+                TAG_TYPE_VIDEO => "video",
+                TAG_TYPE_AUDIO => "audio",
+                TAG_TYPE_SCRIPT => "script",
+                _ => "unknown",
+            };
+
+            let description = if is_video {
+                let codec_name = match tag.codec_id {
+                    Some(7) => "H.264",
+                    Some(12) => "HEVC",
+                    _ => "Video",
+                };
+                if tag.is_seq_header {
+                    format!("{} Sequence Header", codec_name)
+                } else if tag.is_keyframe {
+                    format!("{} Keyframe", codec_name)
+                } else {
+                    format!("{} Frame", codec_name)
+                }
+            } else if is_audio {
+                let codec_name = match tag.codec_id {
+                    Some(10) => "AAC",
+                    Some(2) => "MP3",
+                    _ => "Audio",
+                };
+                codec_name.to_string()
+            } else {
+                "Script Data".to_string()
+            };
+
+            tags.push(TagSummary {
+                index: idx,
+                tag_type: tag_type_str.to_string(),
+                timestamp: tag.timestamp,
+                size: tag.data_size,
+                offset: tag.offset,
+                is_keyframe: tag.is_keyframe,
+                is_seq_header: tag.is_seq_header,
+                frame_type: if tag.is_keyframe { Some(1) } else { Some(2) },
+                codec_id: tag.codec_id,
+                gop_index,
+                description: Some(description),
+                mp4_info: None,
+                has_sei: false,
+                is_sps_pps_change: false,
+            });
+        }
+
+        if let Some(last_gop) = gops.last_mut() {
+            if let Some(last_tag) = tags.last() {
+                last_gop.end_index = tags.len() - 1;
+                last_gop.frame_count = video_tag_count - current_gop_start.unwrap_or(0);
+                last_gop.duration = last_tag.timestamp as f64 / 1000.0 - gop_start_time;
+            }
+        }
+
+        let mut result = AnalysisResult {
+            format: "FLV".to_string(),
+            file_size: self.file_size,
+            duration: self.duration_ms as f64 / 1000.0,
+            has_video: self.has_video,
+            has_audio: self.has_audio,
+            tags,
+            video_timeline,
+            audio_timeline,
+            gops,
+            video_tag_count,
+            audio_tag_count,
+            script_tag_count,
+            keyframe_count,
+            anomalies: Vec::new(),
+            video_init_data: None,
+            video_init_data_list: None,
+            audio_init_data: None,
+            segments: None,
+        };
+
+        result.segments = crate::splitter::compute_segments(&result);
+        Ok(result)
     }
 }

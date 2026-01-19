@@ -11,7 +11,16 @@ use wasm_bindgen::prelude::*;
 static RESULT_CACHE: Lazy<Mutex<HashMap<String, Box<AnalysisResult>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// 内部函数：直接缓存 AnalysisResult（不经过 JS 反序列化）
+/// 这是性能优化的关键 - 避免了昂贵的 serde_wasm_bindgen::from_value 调用
+pub fn cache_result_internal(file_id: String, result: AnalysisResult) {
+    let mut cache = RESULT_CACHE.lock().unwrap();
+    cache.insert(file_id, Box::new(result));
+}
+
 /// 缓存解析结果（由 Worker 调用）
+/// ⚠️ 已弃用：此函数需要反序列化整个对象，性能很差
+/// 请使用流式解析器的 parse_and_cache 方法代替
 #[wasm_bindgen(js_name = cacheParseResult)]
 pub fn cache_parse_result(file_id: String, result: JsValue) -> Result<(), JsValue> {
     // 直接从 JsValue 反序列化
@@ -26,10 +35,10 @@ pub fn cache_parse_result(file_id: String, result: JsValue) -> Result<(), JsValu
 
 #[derive(Serialize)]
 struct Metadata {
-  format: String,
-  #[serde(rename = "fileSize")]
-  file_size: u64,
-  duration: f64,
+    format: String,
+    #[serde(rename = "fileSize")]
+    file_size: u64,
+    duration: f64,
     #[serde(rename = "totalSamples")]
     total_samples: usize,
     #[serde(rename = "totalGops")]
@@ -38,14 +47,16 @@ struct Metadata {
     video_tag_count: usize,
     #[serde(rename = "audioTagCount")]
     audio_tag_count: usize,
-  #[serde(rename = "hasSegments")]
-  has_segments: bool,
-  #[serde(rename = "segments", skip_serializing_if = "Option::is_none")]
-  segments: Option<SegmentInfo>,
-  #[serde(rename = "videoInitData", skip_serializing_if = "Option::is_none")]
-  video_init_data: Option<Vec<u8>>,
-  #[serde(rename = "audioInitData", skip_serializing_if = "Option::is_none")]
-  audio_init_data: Option<Vec<u8>>,
+    #[serde(rename = "keyframeCount")]
+    keyframe_count: usize,
+    #[serde(rename = "hasSegments")]
+    has_segments: bool,
+    #[serde(rename = "segments", skip_serializing_if = "Option::is_none")]
+    segments: Option<SegmentInfo>,
+    #[serde(rename = "videoInitData", skip_serializing_if = "Option::is_none")]
+    video_init_data: Option<Vec<u8>>,
+    #[serde(rename = "audioInitData", skip_serializing_if = "Option::is_none")]
+    audio_init_data: Option<Vec<u8>>,
 }
 
 /// 获取元数据（不包含所有 tags 和 gops）
@@ -62,6 +73,7 @@ pub fn get_metadata(file_id: String) -> Result<JsValue, JsValue> {
             total_gops: result.gops.len(),
             video_tag_count: result.video_tag_count,
             audio_tag_count: result.audio_tag_count,
+            keyframe_count: result.keyframe_count,
             has_segments: result.segments.is_some(),
             segments: result.segments.clone(),
             video_init_data: result.video_init_data.clone(),

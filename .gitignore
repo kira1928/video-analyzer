@@ -68,6 +68,7 @@ Desktop.ini
 *.flv
 *.ts
 !*.d.ts
+!web-src/src/**/*.ts
 cargo_check.log
 check_error.log
 check_log.txt

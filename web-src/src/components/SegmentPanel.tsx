@@ -20,6 +20,10 @@ export function SegmentPanel({ result, fileData, onExportSegment }: SegmentPanel
     return null;
   }
 
+  const format = (result.format || '').toLowerCase();
+  const isFlv = format === 'flv';
+  const isMp4 = format === 'mp4';
+
   const handleExport = async (e: React.MouseEvent, index: number) => {
     e.stopPropagation();
 
@@ -38,8 +42,6 @@ export function SegmentPanel({ result, fileData, onExportSegment }: SegmentPanel
       await new Promise(resolve => setTimeout(resolve, 50));
 
       const resultJson = JSON.stringify(result);
-      const isFlv = result.format === 'FLV';
-      const isMp4 = result.format === 'MP4';
       if (!isFlv && !isMp4) {
         throw new Error('暂不支持当前格式导出');
       }
@@ -109,10 +111,10 @@ export function SegmentPanel({ result, fileData, onExportSegment }: SegmentPanel
                 <button
                   className="export-btn"
                   onClick={(e) => handleExport(e, seg.index)}
-                  disabled={exportingIndex !== null || !fileData || (result.format !== 'FLV' && result.format !== 'MP4')}
-                  title={(result.format !== 'FLV' && result.format !== 'MP4') ? '目前只支持 FLV/MP4 导出' : '导出该分段'}
+                  disabled={exportingIndex !== null || !fileData || (!isFlv && !isMp4)}
+                  title={(!isFlv && !isMp4) ? '目前只支持 FLV/MP4 导出' : '导出该分段'}
                 >
-                  {result.format !== 'FLV' && result.format !== 'MP4' ? '不支持导出' : (exportingIndex === seg.index ? '正在导出...' : (result.format === 'MP4' ? '导出 MP4' : '导出 FLV'))}
+                  {!isFlv && !isMp4 ? '不支持导出' : (exportingIndex === seg.index ? '正在导出...' : (isMp4 ? '导出 MP4' : '导出 FLV'))}
                 </button>
               </div>
             ))}

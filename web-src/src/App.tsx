@@ -23,6 +23,10 @@ function App() {
   const [fileData, setFileData] = useState<Uint8Array | null>(null);
   const [currentFile, setCurrentFile] = useState<File | null>(null);  // 用于大文件流式读取
   const [isStreamingMode, setIsStreamingMode] = useState(false);  // 是否使用流式解析模式
+  const [forceStreaming, setForceStreaming] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('forceStreaming') === '1';
+  });
   const [fileId, setFileId] = useState<string>('');
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -78,26 +82,33 @@ function App() {
 
   const handleNextGop = useCallback((autoPlay?: boolean) => {
     if (!playingGop || !analysisResult) return;
-    const idx = analysisResult.gops.findIndex((g: any) => g.index === playingGop.index);
-    if (idx !== -1 && idx < analysisResult.gops.length - 1) {
+    const gopsSource = isStreamingMode ? loadedGops : analysisResult.gops;
+    const idx = gopsSource.findIndex((g: any) => g.index === playingGop.index);
+    if (idx !== -1 && idx < gopsSource.length - 1) {
       setAutoPlayOnNextGop(!!autoPlay);
-      setPlayingGop(analysisResult.gops[idx + 1]);
+      setPlayingGop(gopsSource[idx + 1]);
     }
-  }, [playingGop, analysisResult]);
+  }, [analysisResult, isStreamingMode, loadedGops, playingGop]);
 
   const handlePrevGop = useCallback(() => {
     if (!playingGop || !analysisResult) return;
-    const idx = analysisResult.gops.findIndex((g: any) => g.index === playingGop.index);
+    const gopsSource = isStreamingMode ? loadedGops : analysisResult.gops;
+    const idx = gopsSource.findIndex((g: any) => g.index === playingGop.index);
     if (idx > 0) {
-      setPlayingGop(analysisResult.gops[idx - 1]);
+      setPlayingGop(gopsSource[idx - 1]);
     }
-  }, [playingGop, analysisResult]);
+  }, [analysisResult, isStreamingMode, loadedGops, playingGop]);
 
   useEffect(() => {
     if (!autoPlayOnNextGop || !playingGop) return;
     const timer = window.setTimeout(() => setAutoPlayOnNextGop(false), 0);
     return () => window.clearTimeout(timer);
   }, [autoPlayOnNextGop, playingGop]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('forceStreaming', forceStreaming ? '1' : '0');
+  }, [forceStreaming]);
 
   // 加载 WASM（主线程 + Worker）
   useEffect(() => {
@@ -254,7 +265,8 @@ function App() {
       const format = await detectFileFormat(file);
 
       // 大文件使用流式解析（Worker 模式）
-      const useStreaming = (format === 'mp4' || format === 'flv') && file.size >= STREAMING_THRESHOLD;
+      const canStream = format === 'mp4' || format === 'flv';
+      const useStreaming = canStream && (forceStreaming || file.size >= STREAMING_THRESHOLD);
       setIsStreamingMode(useStreaming);
 
       if (useStreaming) {
@@ -310,7 +322,7 @@ function App() {
           videoTimeline: [],
           audioTimeline: [],
           scriptTagCount: 0,
-          keyframeCount: 0,
+          keyframeCount: metadata.keyframeCount || 0,
           anomalies: [],
           videoInitData: metadata.videoInitData,
           audioInitData: metadata.audioInitData,
@@ -357,7 +369,7 @@ function App() {
         setAnalysisProgressPercent(80);
 
         // 如果是 MP4 格式，解析 Box 树
-        if (result.format === 'MP4') {
+        if (result.format?.toLowerCase() === 'mp4') {
           setAnalysisProgress('解析 Box 树...');
           try {
             const tree = getMp4BoxTree(data);
@@ -368,7 +380,7 @@ function App() {
         }
         
         // 小文件模式解析完成
-        setAnalysisProgress(`解析完成！共 ${result.tags.length.toLocaleString()} 个 ${result.format === 'MP4' ? 'sample' : '标签'}`);
+        setAnalysisProgress(`解析完成！共 ${result.tags.length.toLocaleString()} 个 ${result.format?.toLowerCase() === 'mp4' ? 'sample' : '标签'}`);
         setAnalysisProgressPercent(100);
         setIsAnalyzing(false);
       }
@@ -443,6 +455,21 @@ function App() {
               {isClearing ? '⏳' : '🗑️'} 清除缓存
             </button>
           </div>
+          <div className="streaming-controls">
+            <label
+              className="streaming-toggle"
+              title="无论大小都使用流式解析（仅 MP4/FLV）"
+            >
+              <input
+                type="checkbox"
+                checked={forceStreaming}
+                onChange={(e) => setForceStreaming(e.target.checked)}
+              />
+              <span className="streaming-toggle-label">
+                {forceStreaming ? '🌊 强制流式解析' : '⛵ 仅大文件流式解析'}
+              </span>
+            </label>
+          </div>
           {/* WASM 状态 */}
           <div className="status">
             <div className={`status-dot ${wasmStatus === 'ready' ? 'ready' : ''}`} />
@@ -513,14 +540,13 @@ function App() {
               <button
                 className="box-tree-btn"
                 onClick={() => {
-                  if (!boxTree) {
-                    alert('流式模式暂未加载 Box 树（需要完整文件数据）');
+                  if (!boxTree || !fileData) {
+                    alert('流式模式暂不支持 Box 树（需要完整文件数据）');
                     return;
                   }
                   setShowBoxTree(true);
                 }}
-                disabled={!boxTree}
-                title={!boxTree ? '流式模式暂不支持 Box 树' : undefined}
+                title={!boxTree || !fileData ? '流式模式暂不支持 Box 树（需要完整文件数据）' : undefined}
               >
                 📦 查看 Box 结构 {boxTree ? `(${boxTree.totalCount} 个 Box)` : ''}
               </button>
@@ -933,7 +959,7 @@ function App() {
           }}
           onPreviewFrame={(gopIndex, tagIdx) => {
             // 找到对应的 GOP 并打开播放器 (如果已打开则保持)
-            const gop = analysisResult.gops[gopIndex];
+            const gop = (isStreamingMode ? loadedGops : analysisResult.gops)[gopIndex];
             if (gop) {
               setSelectedTagIndex(null); // 关闭详情弹窗
               setInitialTagForGop(tagIdx); // 设置跳转目标

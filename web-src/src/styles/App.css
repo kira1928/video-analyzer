@@ -417,6 +417,34 @@
   font-size: 12px;
 }
 
+/* 流式解析开关 */
+.streaming-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-secondary);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.streaming-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.streaming-toggle-label {
+  color: var(--text-secondary);
+  transition: color 0.2s;
+}
+
+.streaming-toggle:hover .streaming-toggle-label {
+  color: var(--text-primary);
+}
+
 .cache-toggle {
   display: flex;
   align-items: center;

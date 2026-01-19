@@ -178,6 +178,28 @@ impl StreamingMp4Parser {
         self.build_result()
     }
 
+    /// 解析并直接缓存结果到 WASM 端，只返回元数据
+    /// 这是性能优化版本 - 避免将完整结果序列化到 JS 再反序列化回来
+    #[wasm_bindgen(js_name = parseAndCache)]
+    pub async fn parse_and_cache(&mut self, file_id: String) -> Result<JsValue, JsError> {
+        // 查找并解析 moov box
+        self.find_and_parse_moov().await?;
+
+        // 计算 sample offsets
+        self.finalize_sample_offsets();
+
+        // 合并 samples
+        self.merge_samples();
+
+        // 构建结果并直接缓存到 Rust HashMap（不经过 JS）
+        let result = self.build_result_internal()?;
+        crate::cache::cache_result_internal(file_id.clone(), result);
+
+        // 只返回元数据
+        crate::cache::get_metadata(file_id)
+            .map_err(|e| JsError::new(&format!("获取元数据失败: {:?}", e)))
+    }
+
     /// 获取 sample 总数
     #[wasm_bindgen(getter)]
     pub fn sample_count(&self) -> usize {
@@ -980,5 +1002,161 @@ impl StreamingMp4Parser {
 
         serde_wasm_bindgen::to_value(&result_mut)
             .map_err(|e| JsError::new(&format!("序列化结果失败: {}", e)))
+    }
+
+    /// 构建分析结果（内部版本，返回 Rust 结构体）
+    /// 用于 parse_and_cache，避免序列化/反序列化开销
+    fn build_result_internal(&self) -> Result<AnalysisResult, JsError> {
+        let mut tags = Vec::new();
+        let mut video_timeline = Vec::new();
+        let mut audio_timeline = Vec::new();
+        let mut gops = Vec::new();
+        let mut video_tag_count = 0usize;
+        let mut audio_tag_count = 0usize;
+        let mut keyframe_count = 0usize;
+        let mut current_gop_start: Option<usize> = None;
+        let mut gop_start_time = 0.0f64;
+
+        for (idx, &(track_idx, sample_idx)) in self.merged_samples.iter().enumerate() {
+            let track = &self.tracks[track_idx];
+            let sample = &track.samples[sample_idx];
+
+            let dts_ms = if track.timescale > 0 {
+                (sample.dts * 1000 / track.timescale as u64) as u32
+            } else {
+                sample.dts as u32
+            };
+
+            let pts_ms = if track.timescale > 0 {
+                dts_ms.wrapping_add((sample.cts_offset * 1000 / track.timescale as i32) as u32)
+            } else {
+                dts_ms
+            };
+
+            let duration_ms = if track.timescale > 0 {
+                Some((sample.duration as f64 * 1000.0) / track.timescale as f64)
+            } else {
+                None
+            };
+
+            let is_video = track.track_type == TrackType::Video;
+            let is_keyframe = sample.is_sync && is_video;
+
+            let gop_index = if is_video {
+                if is_keyframe && current_gop_start.is_some() {
+                    let prev_gop_start = current_gop_start.unwrap();
+                    let gop_frame_count = video_tag_count - prev_gop_start;
+                    if !gops.is_empty() {
+                        let last_gop: &mut Gop = gops.last_mut().unwrap();
+                        last_gop.end_index = idx.saturating_sub(1);
+                        last_gop.frame_count = gop_frame_count;
+                        last_gop.duration = dts_ms as f64 / 1000.0 - gop_start_time;
+                    }
+                }
+                if is_keyframe {
+                    current_gop_start = Some(video_tag_count);
+                    gop_start_time = dts_ms as f64 / 1000.0;
+                    gops.push(Gop {
+                        index: gops.len(),
+                        start_index: idx,
+                        end_index: idx,
+                        start_time: gop_start_time,
+                        duration: 0.0,
+                        frame_count: 0,
+                    });
+                }
+                if current_gop_start.is_some() {
+                    Some(gops.len().saturating_sub(1) as i32)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if is_video {
+                video_tag_count += 1;
+                if is_keyframe {
+                    keyframe_count += 1;
+                }
+                video_timeline.push(TimelinePoint {
+                    index: idx,
+                    timestamp: dts_ms as f64 / 1000.0,
+                    dts: dts_ms as f64 / 1000.0,
+                    pts: pts_ms as f64 / 1000.0,
+                    duration: duration_ms,
+                });
+            } else if track.track_type == TrackType::Audio {
+                audio_tag_count += 1;
+                audio_timeline.push(TimelinePoint {
+                    index: idx,
+                    timestamp: dts_ms as f64 / 1000.0,
+                    dts: dts_ms as f64 / 1000.0,
+                    pts: pts_ms as f64 / 1000.0,
+                    duration: duration_ms,
+                });
+            }
+
+            tags.push(TagSummary {
+                index: idx,
+                tag_type: if is_video { "video".to_string() } else { "audio".to_string() },
+                timestamp: dts_ms,
+                size: sample.size,
+                offset: sample.offset,
+                is_keyframe,
+                is_seq_header: false,
+                frame_type: if is_keyframe { Some(1) } else { Some(2) },
+                codec_id: match track.codec {
+                    Codec::H264 => Some(7),
+                    Codec::H265 => Some(12),
+                    _ => None,
+                },
+                gop_index,
+                description: Some(format!(
+                    "{} {}",
+                    track.codec.as_str(),
+                    if is_keyframe { "keyframe" } else { "frame" }
+                )),
+                mp4_info: Some(Mp4SampleInfo {
+                    track_id: track.track_id,
+                    sample_index: sample_idx as u32,
+                    sample_desc_index: Some(sample.sample_desc_index),
+                }),
+                has_sei: false,
+                is_sps_pps_change: false,
+            });
+        }
+
+        if let Some(last_gop) = gops.last_mut() {
+            if let Some(last_tag) = tags.last() {
+                last_gop.end_index = tags.len() - 1;
+                last_gop.frame_count = video_tag_count - current_gop_start.unwrap_or(0);
+                last_gop.duration = last_tag.timestamp as f64 / 1000.0 - gop_start_time;
+            }
+        }
+
+        let mut result = AnalysisResult {
+            format: "mp4".to_string(),
+            file_size: self.file_size,
+            duration: self.duration_ms as f64 / 1000.0,
+            has_video: self.has_video,
+            has_audio: self.has_audio,
+            tags,
+            video_timeline,
+            audio_timeline,
+            gops,
+            video_tag_count,
+            audio_tag_count,
+            script_tag_count: 0,
+            keyframe_count,
+            anomalies: Vec::new(),
+            video_init_data: self.video_init_data.clone(),
+            video_init_data_list: None,
+            audio_init_data: self.audio_init_data.clone(),
+            segments: None,
+        };
+
+        result.segments = crate::splitter::compute_segments(&result);
+        Ok(result)
     }
 }

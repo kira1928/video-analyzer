@@ -19,6 +19,72 @@ const DB_NAME = 'VideoAnalyzerCache';
 const STORE_NAME = 'frames';
 const MAX_CACHE_SIZE = 600; // ~100MB capacity
 
+// === 缓存开关 ===
+let cacheEnabled = true;
+const CACHE_ENABLED_KEY = 'videoAnalyzer_cacheEnabled';
+
+// 初始化时从 localStorage 读取设置
+try {
+  const saved = localStorage.getItem(CACHE_ENABLED_KEY);
+  if (saved !== null) {
+    cacheEnabled = saved === 'true';
+  }
+} catch (e) {
+  // localStorage 不可用
+}
+
+export function isCacheEnabled(): boolean {
+  return cacheEnabled;
+}
+
+export function setCacheEnabled(enabled: boolean): void {
+  cacheEnabled = enabled;
+  try {
+    localStorage.setItem(CACHE_ENABLED_KEY, String(enabled));
+  } catch (e) {
+    // localStorage 不可用
+  }
+}
+
+// === 缓存统计 ===
+export interface CacheStats {
+  indexedDBCount: number;
+  audioBufferCount: number;
+  estimatedSize: string;
+}
+
+export async function getCacheStats(): Promise<CacheStats> {
+  let indexedDBCount = 0;
+
+  try {
+    const db = await openDB();
+    indexedDBCount = await new Promise<number>((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readonly');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.count();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (e) {
+    // 忽略错误
+  }
+
+  const audioBufferCount = audioCache.size;
+
+  // 估算大小 (假设每帧平均 150KB)
+  const estimatedBytes = indexedDBCount * 150 * 1024;
+  let estimatedSize = '0 B';
+  if (estimatedBytes < 1024) {
+    estimatedSize = `${estimatedBytes} B`;
+  } else if (estimatedBytes < 1024 * 1024) {
+    estimatedSize = `${(estimatedBytes / 1024).toFixed(1)} KB`;
+  } else {
+    estimatedSize = `${(estimatedBytes / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  return { indexedDBCount, audioBufferCount, estimatedSize };
+}
+
 // === Audio Cache (In-Memory) ===
 // Note: Audio cache is also cleared per file session in App usually, but for safely, we can key it by fileId too?
 // For now, let's keep audio cache simple (GOP index collision possible if multiple files opened).
@@ -43,6 +109,20 @@ export function loadAudioBuffer(fileId: string, gopIndex: number): AudioBuffer |
 async function getOpfsFrameDir() {
   const root = await navigator.storage.getDirectory();
   return await root.getDirectoryHandle('frames', { create: true });
+}
+
+async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
+  const response = await fetch(dataUrl);
+  return await response.blob();
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
 }
 
 function getOpfsFileName(fileId: string, tagIndex: number) {
@@ -70,7 +150,8 @@ async function saveToOpfs(fileId: string, tagIndex: number, blob: Blob, thumbnai
     const thumbName = getOpfsThumbFileName(fileId, tagIndex);
     const thumbHandle = await dir.getFileHandle(thumbName, { create: true });
     const thumbWritable = await thumbHandle.createWritable();
-    await thumbWritable.write(thumbnail); // write string safely
+    const thumbBlob = await dataUrlToBlob(thumbnail);
+    await thumbWritable.write(thumbBlob);
     await thumbWritable.close();
   }
 }
@@ -90,7 +171,7 @@ async function loadFromOpfs(fileId: string, tagIndex: number, hasThumbnail: bool
       const thumbName = getOpfsThumbFileName(fileId, tagIndex);
       const thumbHandle = await dir.getFileHandle(thumbName);
       const thumbFile = await thumbHandle.getFile();
-      thumbnail = await thumbFile.text();
+      thumbnail = await blobToDataUrl(thumbFile);
     } catch (e) {
       console.warn("Missing thumbnail file", e);
     }
@@ -181,6 +262,9 @@ export async function clearCache(): Promise<void> {
 }
 
 export async function saveFrame(fileId: string, tagIndex: number, blob: Blob, thumbnail?: string): Promise<void> {
+  // 如果缓存被禁用，直接返回
+  if (!cacheEnabled) return;
+
   try {
     // 1. Save Blob & Thumbnail to OPFS
     await saveToOpfs(fileId, tagIndex, blob, thumbnail);
@@ -226,6 +310,9 @@ export async function saveFrame(fileId: string, tagIndex: number, blob: Blob, th
 }
 
 export async function loadCachedFrame(fileId: string, tagIndex: number): Promise<CachedFrame | null> {
+  // 如果缓存被禁用，直接返回 null
+  if (!cacheEnabled) return null;
+
   try {
     const db = await openDB();
     // 1. Get Meta

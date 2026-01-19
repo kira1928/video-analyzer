@@ -1,31 +1,83 @@
 import { useState, useCallback, useEffect } from 'react';
-import { AnalysisResult, TagDetail, TagField, HexLine } from '../types';
-import { getTagDetail } from '../utils/wasm';
+import { AnalysisResult, TagDetail, TagField, HexLine, Mp4SampleDetail, TagSummary } from '../types';
+import { getTagDetail, getMp4SampleDetail } from '../utils/wasm';
 import { loadFrame } from '../utils/gopCache';
+import { formatDuration } from '../utils/format';
+import { wasmWorker } from '../workers/wasmWorkerManager';
 import './DetailModal.css';
 
 interface DetailModalProps {
   fileId: string;
   tagIndex: number;
+  tagSummary?: TagSummary | null;
   result: AnalysisResult;
-  fileData: Uint8Array;
+  fileData: Uint8Array | null;  // 可能为 null（流式模式）
+  currentFile?: File;           // 流式模式下提供
+  isStreamingMode?: boolean;
   onClose: () => void;
   onPreviewFrame?: (gopIndex: number, tagIndex: number) => void;
+}
+
+/**
+ * 构造最小化的 FLV Tag 数据：11 字节头 + 数据 + PreviousTagSize
+ * 只用于详情展示，避免按原始偏移分配巨大缓冲区
+ */
+function buildFlvTagBuffer(tag: TagSummary, sampleData: Uint8Array): Uint8Array {
+  const header = new Uint8Array(11);
+  const typeByte = tag.type === 'audio' ? 8 : tag.type === 'video' ? 9 : 18;
+  const dataSize = tag.size ?? sampleData.length;
+  const ts = Math.max(0, Math.floor(tag.timestamp));
+
+  header[0] = typeByte;
+  header[1] = (dataSize >> 16) & 0xff;
+  header[2] = (dataSize >> 8) & 0xff;
+  header[3] = dataSize & 0xff;
+  header[4] = (ts >> 16) & 0xff;
+  header[5] = (ts >> 8) & 0xff;
+  header[6] = ts & 0xff;
+  header[7] = (ts >> 24) & 0xff;
+  header[8] = 0;
+  header[9] = 0;
+  header[10] = 0;
+
+  const prevTagSize = header.length + sampleData.length;
+  const buffer = new Uint8Array(header.length + sampleData.length + 4);
+  buffer.set(header, 0);
+  buffer.set(sampleData, header.length);
+  buffer.set(
+    new Uint8Array([
+      (prevTagSize >>> 24) & 0xff,
+      (prevTagSize >>> 16) & 0xff,
+      (prevTagSize >>> 8) & 0xff,
+      prevTagSize & 0xff,
+    ]),
+    header.length + sampleData.length,
+  );
+  return buffer;
 }
 
 export function DetailModal({
   fileId,
   tagIndex,
+  tagSummary,
   result,
   fileData,
+  currentFile: _currentFile,
+  isStreamingMode,
   onClose,
   onPreviewFrame
 }: DetailModalProps) {
+  const [resolvedTag, setResolvedTag] = useState<TagSummary | null>(tagSummary ?? null);
   const [detail, setDetail] = useState<TagDetail | null>(null);
+  const [mp4SampleDetail, setMp4SampleDetail] = useState<Mp4SampleDetail | null>(null);
   const [highlightRange, setHighlightRange] = useState<{ start: number; end: number } | null>(null);
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [cachedImageUrl, setCachedImageUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    setResolvedTag(tagSummary ?? null);
+  }, [tagSummary, tagIndex]);
 
   // 加载缓存的预览图
   useEffect(() => {
@@ -49,36 +101,160 @@ export function DetailModal({
   }, [fileId, tagIndex]);
 
   // 查找当前 Tag 所属的 GOP
-  const currentTag = result.tags[tagIndex];
-  const belongingGop = currentTag?.type === 'video' && !currentTag.isSeqHeader
+  const currentTag = resolvedTag ?? result.tags[tagIndex];
+  const belongingGop = currentTag
     ? result.gops.find(g => tagIndex >= g.startIndex && tagIndex <= g.endIndex)
     : null;
 
-  // 加载详情数据（从 WASM）
-  useEffect(() => {
-    try {
-      const tagDetail = getTagDetail(result, tagIndex, fileData);
-      setDetail(tagDetail);
+  // 存储本地读取的数据（流式模式用）
+  const [localFileData, setLocalFileData] = useState<Uint8Array | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
 
-      // 默认展开有 expanded 标记的节点
-      const expanded = new Set<string>();
-      const collectExpanded = (fields: TagField[], path = '') => {
-        fields.forEach(f => {
-          const fieldPath = `${path}${f.name}`;
-          if (f.expanded) {
-            expanded.add(fieldPath);
+  // 加载详情数据（从 WASM）- 支持流式模式
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadDetail = async () => {
+      try {
+        setIsLoading(true);
+        setError(null);
+        setDetail(null);
+        setExpandedNodes(new Set());
+        setMp4SampleDetail(null);
+        setHighlightRange(null);
+
+        let tag = resolvedTag ?? null;
+        if (!tag) {
+          if (isStreamingMode) {
+            try {
+              const fetched = await wasmWorker.getSample(fileId, tagIndex);
+              if (cancelled) return;
+              setResolvedTag(fetched);
+              tag = fetched;
+            } catch (e) {
+              if (!cancelled) {
+                setError(e instanceof Error ? e.message : String(e));
+              }
+              return;
+            }
+          } else {
+            tag = result.tags[tagIndex];
           }
-          if (f.children) {
-            collectExpanded(f.children, `${fieldPath}/`);
+        }
+
+        if (!tag) {
+          setError('找不到指定的标签');
+          return;
+        }
+
+        let dataToUse: Uint8Array | null = null;
+        const format = (result.format || '').toLowerCase();
+        const hasFullData = !!fileData;
+
+        if (!hasFullData) {
+          try {
+            const sampleData = await wasmWorker.readSampleData(fileId, tagIndex);
+            if (cancelled) return;
+
+            dataToUse = format === 'flv'
+              ? buildFlvTagBuffer(tag, sampleData)
+              : sampleData;
+            setLocalFileData(dataToUse);
+          } catch (e) {
+            throw new Error(`读取数据失败: ${e instanceof Error ? e.message : String(e)}`);
           }
-        });
-      };
-      collectExpanded(tagDetail.fields);
-      setExpandedNodes(expanded);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [result, tagIndex, fileData]);
+        } else {
+          dataToUse = fileData;
+          setLocalFileData(null);
+        }
+
+        if (cancelled || !dataToUse) return;
+
+        let detailForExpand: TagDetail | null = null;
+
+        if (hasFullData) {
+          const tagDetail = getTagDetail(result, tagIndex, dataToUse);
+          setDetail(tagDetail);
+          detailForExpand = tagDetail;
+
+          if (tag.mp4Info) {
+            try {
+              const sampleDetail = getMp4SampleDetail(result, tagIndex, dataToUse);
+              setMp4SampleDetail(sampleDetail);
+            } catch (e) {
+              console.warn('无法加载 MP4 Sample 详情:', e);
+            }
+          }
+        } else {
+          // 构造只包含当前 sample 的精简结果，避免把完整结果传给 WASM
+          const normalizedTag: TagSummary = {
+            ...tag,
+            index: 0,
+            offset: 0,
+            size: tag.size ?? dataToUse.length,
+          };
+          const detailResult: AnalysisResult = {
+            ...result,
+            tags: [normalizedTag],
+            gops: result.gops ?? [],
+            videoTimeline: result.videoTimeline ?? [],
+            audioTimeline: result.audioTimeline ?? [],
+          };
+
+          const tagDetail = getTagDetail(detailResult, 0, dataToUse);
+          const adjustedDetail: TagDetail = {
+            ...tagDetail,
+            tagIndex: tag.index,
+            offset: tag.offset,
+          };
+          setDetail(adjustedDetail);
+          detailForExpand = adjustedDetail;
+
+          if (tag.mp4Info) {
+            try {
+              const sampleDetail = getMp4SampleDetail(detailResult, 0, dataToUse);
+              setMp4SampleDetail(sampleDetail);
+            } catch (e) {
+              console.warn('无法加载 MP4 Sample 详情:', e);
+            }
+          }
+        }
+
+        // 默认展开有 expanded 标记的节点
+        const expanded = new Set<string>();
+        const collectExpanded = (fields: TagField[], path = '') => {
+          fields.forEach(f => {
+            const fieldPath = `${path}${f.name}`;
+            if (f.expanded) {
+              expanded.add(fieldPath);
+            }
+            if (f.children) {
+              collectExpanded(f.children, `${fieldPath}/`);
+            }
+          });
+        };
+        if (detailForExpand) {
+          collectExpanded(detailForExpand.fields);
+        }
+        setExpandedNodes(expanded);
+
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    loadDetail();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId, tagIndex, isStreamingMode, fileData, result, resolvedTag]);
 
   const handleFieldClick = useCallback((field: TagField, path: string) => {
     // 高亮对应字节
@@ -114,12 +290,12 @@ export function DetailModal({
     );
   }
 
-  if (!detail) {
+  if (!detail || isLoading) {
     return (
       <div className="detail-modal-backdrop" onClick={onClose}>
         <div className="detail-modal" onClick={e => e.stopPropagation()}>
           <div className="detail-modal-header">
-            <h3>加载中...</h3>
+            <h3>{isStreamingMode ? '正在读取数据...' : '加载中...'}</h3>
             <button className="detail-modal-close" onClick={onClose}>×</button>
           </div>
         </div>
@@ -132,7 +308,15 @@ export function DetailModal({
       <div className="detail-modal" onClick={e => e.stopPropagation()}>
         <div className="detail-modal-header">
           <h3>
-            {detail.tagType === 'video' ? '视频' : detail.tagType === 'audio' ? '音频' : '脚本'} 标签 #{detail.tagIndex}
+            {currentTag?.mp4Info
+              ? `${detail.tagType === 'video' ? '视频' : detail.tagType === 'audio' ? '音频' : '脚本'} Sample (Track ${currentTag.mp4Info.trackId} #${currentTag.mp4Info.sampleIndex})`
+              : `${detail.tagType === 'video' ? '视频' : detail.tagType === 'audio' ? '音频' : '脚本'} 标签 #${detail.tagIndex}`
+            }
+            {currentTag && (
+              <span className="detail-timestamp" style={{ marginLeft: '12px', fontSize: '14px', color: '#aaa', fontWeight: 'normal' }}>
+                @ {formatDuration(currentTag.timestamp / 1000)}
+              </span>
+            )}
           </h3>
           <button className="detail-modal-close" onClick={onClose}>×</button>
         </div>
@@ -146,10 +330,31 @@ export function DetailModal({
             </div>
           </div>
 
-          {/* 右侧: 属性树 */}
+          {/* 右侧: 属性树 + MP4 详情 */}
           <div className="linked-view-panel">
             <div className="linked-view-header">📋 字段解析</div>
             <div className="linked-view-content property-tree">
+              {/* MP4 Sample 详情 */}
+              {mp4SampleDetail && (
+                <div className="mp4-sample-detail">
+                  <div className="mp4-sample-detail-header">📊 Sample 信息</div>
+                  <table className="mp4-sample-table">
+                    <tbody>
+                      {mp4SampleDetail.fields.map((field, i) => (
+                        <tr key={i} className="mp4-sample-row">
+                          <td className="mp4-sample-name">{field.name}</td>
+                          <td className="mp4-sample-value">{field.value}</td>
+                          <td className="mp4-sample-help" title={`${field.description}\n\n计算方式: ${field.formula}`}>
+                            ℹ️
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* 字段树 */}
               <PropertyTree
                 fields={detail.fields}
                 expandedNodes={expandedNodes}
@@ -186,12 +391,32 @@ export function DetailModal({
           )}
 
           <div style={{ display: 'flex', gap: '10px' }}>
-            <button className="btn btn-success" onClick={() => saveTagData(detail, fileData, false)}>
-              💾 保存二进制数据
+            <button
+              className="btn btn-success"
+              onClick={() => {
+                const dataToSave = fileData || localFileData;
+                if (dataToSave) {
+                  saveTagData(detail, dataToSave, false, currentTag?.mp4Info);
+                }
+              }}
+              disabled={!fileData && !localFileData}
+            >
+              💾 保存{currentTag?.mp4Info ? ' Sample 数据' : '二进制数据'}
             </button>
-            <button className="btn btn-secondary" onClick={() => saveTagData(detail, fileData, true)}>
-              📦 保存完整 Tag
-            </button>
+            {!currentTag?.mp4Info && (
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  const dataToSave = fileData || localFileData;
+                  if (dataToSave) {
+                    saveTagData(detail, dataToSave, true);
+                  }
+                }}
+                disabled={!fileData && !localFileData}
+              >
+                📦 保存完整 Tag
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -281,16 +506,28 @@ function PropertyTree({ fields, expandedNodes, highlightRange, onFieldClick, par
 }
 
 // 保存标签数据
-function saveTagData(detail: TagDetail, fileData: Uint8Array, includeHeader: boolean) {
-  const tagOffset = Number(detail.offset);
-  const start = includeHeader ? tagOffset : tagOffset + 11;
-  const end = includeHeader ? tagOffset + 11 + detail.size + 4 : tagOffset + 11 + detail.size;
+function saveTagData(detail: TagDetail, fileData: Uint8Array, includeHeader: boolean, mp4Info?: any) {
+  let start = 0;
+  let end = 0;
+  let filename = '';
+
+  if (mp4Info) {
+    // MP4 模式：直接保存 Sample 数据
+    start = Number(detail.offset);
+    end = start + detail.size;
+    filename = `track_${mp4Info.trackId}_sample_${mp4Info.sampleIndex}.bin`;
+  } else {
+    // FLV 模式
+    const tagOffset = Number(detail.offset);
+    start = includeHeader ? tagOffset : tagOffset + 11;
+    end = includeHeader ? tagOffset + 11 + detail.size + 4 : tagOffset + 11 + detail.size;
+
+    filename = includeHeader
+      ? `tag_${detail.tagIndex}_${detail.tagType}_full.flv_tag`
+      : `tag_${detail.tagIndex}_${detail.tagType}_data.bin`;
+  }
+
   const data = fileData.slice(start, end);
-
-  const filename = includeHeader
-    ? `tag_${detail.tagIndex}_${detail.tagType}_full.flv_tag`
-    : `tag_${detail.tagIndex}_${detail.tagType}_data.bin`;
-
   const blob = new Blob([data], { type: 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

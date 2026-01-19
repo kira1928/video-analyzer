@@ -149,6 +149,27 @@
   outline: 1px solid var(--accent);
 }
 
+/* NALU 类型高亮 */
+.hex-highlight-keyframe {
+  background: rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}
+
+.hex-highlight-config {
+  background: rgba(168, 85, 247, 0.35);
+  color: #d8b4fe;
+}
+
+.hex-highlight-metadata {
+  background: rgba(245, 158, 11, 0.3);
+  color: #fcd34d;
+}
+
+.hex-highlight-error {
+  background: rgba(239, 68, 68, 0.5);
+  color: #fca5a5;
+}
+
 /* 属性树 */
 .property-tree {
   font-size: 12px;
@@ -208,4 +229,61 @@
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+/* MP4 Sample 详情 */
+.mp4-sample-detail {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mp4-sample-detail-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--border);
+}
+
+.mp4-sample-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.mp4-sample-row {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.mp4-sample-row:hover {
+  background: rgba(100, 149, 237, 0.08);
+}
+
+.mp4-sample-name {
+  padding: 6px 8px;
+  color: #7ce38b;
+  font-weight: 500;
+  width: 120px;
+  font-family: monospace;
+}
+
+.mp4-sample-value {
+  padding: 6px 8px;
+  color: var(--text-primary);
+  font-family: monospace;
+}
+
+.mp4-sample-help {
+  padding: 6px 8px;
+  width: 30px;
+  text-align: center;
+  cursor: help;
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+
+.mp4-sample-help:hover {
+  opacity: 1;
 }

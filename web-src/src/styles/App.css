@@ -32,6 +32,9 @@
 .loading {
   text-align: center;
   padding: 40px;
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  margin-bottom: 24px;
 }
 
 .spinner {
@@ -48,6 +51,69 @@
   to {
     transform: rotate(360deg);
   }
+}
+
+.loading p {
+  margin-bottom: 16px;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.progress-bar {
+  width: 100%;
+  max-width: 400px;
+  height: 6px;
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 0 auto;
+}
+
+.progress-bar-inner {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #60a5fa);
+  border-radius: 3px;
+  animation: progress-indeterminate 1.5s ease-in-out infinite;
+}
+
+@keyframes progress-indeterminate {
+  0% {
+    width: 0%;
+    margin-left: 0%;
+  }
+
+  50% {
+    width: 40%;
+    margin-left: 30%;
+  }
+
+  100% {
+    width: 0%;
+    margin-left: 100%;
+  }
+}
+
+.progress-text {
+  margin-top: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.cancel-btn {
+  margin-top: 16px;
+  min-width: 120px;
+}
+
+.btn-danger {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
 }
 
 /* 文件信息 */
@@ -80,6 +146,30 @@
 .info-item .value {
   font-size: 20px;
   font-weight: 600;
+}
+
+/* Box 树按钮 */
+.box-tree-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 10px 18px;
+  background: linear-gradient(135deg, rgba(100, 149, 237, 0.15) 0%, rgba(65, 105, 225, 0.15) 100%);
+  border: 1px solid rgba(100, 149, 237, 0.3);
+  border-radius: 8px;
+  color: #6495ed;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.box-tree-btn:hover {
+  background: linear-gradient(135deg, rgba(100, 149, 237, 0.25) 0%, rgba(65, 105, 225, 0.25) 100%);
+  border-color: #6495ed;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(100, 149, 237, 0.2);
 }
 
 /* 主内容区 */
@@ -307,4 +397,266 @@
 .anomaly-desc {
   font-size: 14px;
   margin-top: 4px;
+}
+
+/* Header 控件 */
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+/* 缓存管理控件 */
+.cache-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-secondary);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.cache-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.cache-toggle input {
+  display: none;
+}
+
+.cache-toggle-label {
+  color: var(--text-secondary);
+  transition: color 0.2s;
+}
+
+.cache-toggle:hover .cache-toggle-label {
+  color: var(--text-primary);
+}
+
+.cache-stats {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.cache-clear-btn {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.cache-clear-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+.cache-clear-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* GOP 信息样式 */
+.gop-info {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.gop-time {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.gop-meta {
+  color: var(--text-secondary);
+  opacity: 0.5;
+}
+
+.gop-frames {
+  color: var(--text-secondary);
+}
+
+.gop-duration {
+  color: var(--success);
+}
+
+/* Sample/Tag 列表控件 */
+.tag-list-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pagination button {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  transition: all 0.2s;
+}
+
+.pagination button:hover:not(:disabled) {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.pagination button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.page-info {
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 60px;
+  text-align: center;
+}
+
+.jump-to {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.jump-to input {
+  width: 80px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+.jump-to input::placeholder {
+  color: var(--text-secondary);
+}
+
+.jump-to button {
+  background: var(--accent);
+  border: none;
+  color: white;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.jump-to button:hover {
+  opacity: 0.9;
+}
+
+/* Tag 索引 */
+.tag-index {
+  color: var(--text-secondary);
+  font-size: 10px;
+  min-width: 50px;
+  font-family: monospace;
+}
+
+/* 筛选控件 */
+.filter-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-controls select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.filter-controls select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.sei-filter {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  transition: all 0.2s;
+}
+
+.sei-filter:hover {
+  border-color: var(--accent);
+}
+
+.sei-filter input {
+  margin: 0;
+}
+
+.sei-filter input:checked+span {
+  color: #f59e0b;
+}
+
+/* SEI 标签样式 */
+.tag-badge.sei {
+  background: #f59e0b;
+  color: #000;
+}
+
+.tag-item.has-sei {
+  border-left: 2px solid #f59e0b;
+}
+
+/* SPS/PPS 变化标签样式 */
+.tag-badge.sps-pps {
+  background: #ef4444;
+  color: #fff;
+  font-weight: bold;
+}
+
+.tag-item.has-sps-pps-change {
+  border-left: 2px solid #ef4444;
+}
+
+/* 空消息 */
+.empty-message {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+/* 加载消息 */
+.loading-message {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--accent);
+  font-size: 14px;
 }

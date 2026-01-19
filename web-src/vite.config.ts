@@ -41,7 +41,14 @@ export default defineConfig({
       },
       // 不要尝试打包 WASM 模块
       external: [/\/pkg\/.*/],
+      output: {
+        // Worker 使用 ES 模块格式
+        format: 'es',
+      },
     },
+  },
+  worker: {
+    format: 'es',
   },
   resolve: {
     alias: {

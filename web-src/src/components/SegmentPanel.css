@@ -1,0 +1,157 @@
+.segment-panel {
+  margin: 10px 0;
+  border: 1px solid #e6a23c;
+  background-color: #fdf6ec;
+  border-radius: 4px;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.segment-header {
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  background-color: #fdf6ec;
+}
+
+.segment-header:hover {
+  background-color: #faecd8;
+}
+
+.segment-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #e6a23c;
+  font-weight: 500;
+}
+
+.warning-icon {
+  font-size: 1.2em;
+}
+
+.toggle-btn {
+  border: none;
+  background: none;
+  color: #606266;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.segment-content {
+  padding: 16px;
+  border-top: 1px solid #f0dab9;
+  background-color: #fff;
+}
+
+.segment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.segment-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  background-color: #fafafa;
+}
+
+.segment-item:hover {
+  background-color: #f0f2f5;
+}
+
+.segment-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.segment-main-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.segment-index {
+  font-weight: bold;
+  color: #303133;
+}
+
+.segment-duration {
+  background-color: #ecf5ff;
+  color: #409eff;
+  padding: 2px 6px;
+  border-radius: 2px;
+  font-size: 12px;
+}
+
+.segment-details {
+  font-size: 12px;
+  color: #909399;
+  display: flex;
+  gap: 8px;
+}
+
+.segment-reason {
+  color: #e6a23c;
+}
+
+.segment-warning {
+  font-size: 12px;
+  color: #f56c6c;
+  margin-top: 4px;
+}
+
+.export-btn {
+  padding: 6px 12px;
+  background-color: #67c23a;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color 0.2s;
+}
+
+.export-btn:hover:not(:disabled) {
+  background-color: #85ce61;
+}
+
+.export-btn:disabled {
+  background-color: #c0c4cc;
+  cursor: not-allowed;
+}
+
+.segment-global-warnings {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #ebeef5;
+}
+
+.segment-global-warnings h4 {
+  margin: 0 0 8px 0;
+  color: #e6a23c;
+  font-size: 14px;
+}
+
+.segment-global-warnings ul {
+  margin: 0;
+  padding-left: 20px;
+  color: #606266;
+  font-size: 13px;
+}
+
+.segment-error {
+  padding: 10px;
+  margin-bottom: 12px;
+  background-color: #fef0f0;
+  color: #f56c6c;
+  border-radius: 4px;
+  font-size: 14px;
+}

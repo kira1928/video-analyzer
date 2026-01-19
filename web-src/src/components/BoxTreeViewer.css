@@ -1,0 +1,714 @@
+/* BoxTreeViewer 组件样式 */
+
+.box-tree-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.box-tree-modal {
+  background: var(--card-background, #1a1a2e);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 1200px;
+  height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+/* 带 Hex viewer 的更宽模态框 */
+.box-tree-modal-with-hex {
+  max-width: 1600px;
+  width: 95%;
+}
+
+.box-tree-header {
+  display: flex;
+  align-items: center;
+  padding: 16px 20px;
+  background: linear-gradient(135deg, #2a2a4a 0%, #1a1a2e 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
+}
+
+.box-tree-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.box-tree-count {
+  margin-left: 12px;
+  padding: 4px 10px;
+  background: rgba(100, 149, 237, 0.2);
+  color: #6495ed;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+.box-tree-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: #888;
+  font-size: 24px;
+  cursor: pointer;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: all 0.2s ease;
+}
+
+.box-tree-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.box-tree-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 20px;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.box-tree-search input {
+  padding: 8px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.3);
+  color: #fff;
+  font-size: 13px;
+  width: 260px;
+  transition: border-color 0.2s;
+}
+
+.box-tree-search input:focus {
+  outline: none;
+  border-color: #6495ed;
+}
+
+.box-tree-search input::placeholder {
+  color: #666;
+}
+
+.box-tree-search-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.box-tree-search-meta button {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.box-tree-search-meta button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.box-tree-match-count {
+  font-size: 12px;
+  color: #aaa;
+  min-width: 50px;
+  text-align: center;
+}
+
+.box-tree-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.box-tree-actions button {
+  padding: 6px 12px;
+  background: rgba(100, 149, 237, 0.15);
+  border: 1px solid rgba(100, 149, 237, 0.3);
+  border-radius: 6px;
+  color: #6495ed;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.box-tree-actions button:hover {
+  background: rgba(100, 149, 237, 0.25);
+  border-color: #6495ed;
+}
+
+.box-tree-desc-mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.box-tree-desc-mode label {
+  color: #888;
+  font-size: 12px;
+}
+
+.box-tree-desc-mode select {
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* 主内容区：左右分栏 */
+.box-tree-main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.box-tree-left {
+  width: 45%;
+  min-width: 400px;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.box-tree-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.box-tree-content {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 20px;
+}
+
+/* 占位符 */
+.box-tree-placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #666;
+}
+
+.placeholder-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+.placeholder-text {
+  font-size: 14px;
+}
+
+/* Hex 面板 */
+.box-hex-panel {
+  height: 40%;
+  min-height: 200px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.box-hex-header {
+  padding: 10px 16px;
+  background: rgba(0, 0, 0, 0.3);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: #aaa;
+  flex-shrink: 0;
+}
+
+.box-hex-info {
+  font-family: monospace;
+  font-size: 11px;
+  color: #888;
+}
+
+.hex-truncated {
+  color: #f5a623;
+  font-style: italic;
+}
+
+.box-hex-content {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 16px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+/* Hex 视图 */
+.hex-view {
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 11px;
+  line-height: 1.8;
+}
+
+.hex-line {
+  display: flex;
+  white-space: nowrap;
+}
+
+.hex-offset {
+  color: #666;
+  width: 70px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.hex-bytes {
+  flex: 1;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.hex-byte {
+  display: inline-block;
+  width: 22px;
+  text-align: center;
+  border-radius: 2px;
+  color: #888;
+}
+
+.hex-padding {
+  color: transparent;
+}
+
+.hex-ascii {
+  color: #7ce38b;
+  width: 140px;
+  flex-shrink: 0;
+  margin-left: 16px;
+  letter-spacing: 0.5px;
+}
+
+/* Hex 高亮 - Box 头部 */
+.hex-highlight-header {
+  background: rgba(100, 149, 237, 0.35);
+  color: #93c5fd !important;
+}
+
+.ascii-highlight-header {
+  background: rgba(100, 149, 237, 0.25);
+  color: #93c5fd;
+}
+
+/* Hex 高亮 - Box 内容 */
+.hex-highlight-content {
+  background: rgba(124, 227, 139, 0.25);
+  color: #7ce38b !important;
+}
+
+.ascii-highlight-content {
+  background: rgba(124, 227, 139, 0.15);
+  color: #7ce38b;
+}
+
+/* Box 节点列表 */
+.box-node-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.box-node-list .box-node-list {
+  margin-left: 24px;
+  border-left: 1px dashed rgba(255, 255, 255, 0.1);
+  padding-left: 12px;
+}
+
+.box-node {
+  margin: 2px 0;
+}
+
+.box-node-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 13px;
+}
+
+.box-node-row:hover {
+  background: rgba(100, 149, 237, 0.1);
+}
+
+.box-node-row.selected {
+  background: rgba(100, 149, 237, 0.2);
+  outline: 1px solid rgba(100, 149, 237, 0.4);
+}
+
+.box-node-row.matched {
+  background: rgba(100, 149, 237, 0.08);
+}
+
+.box-node-row.current-match {
+  background: rgba(100, 149, 237, 0.18);
+  outline: 1px solid rgba(100, 149, 237, 0.5);
+}
+
+.box-node-toggle {
+  width: 16px;
+  text-align: center;
+  color: #6495ed;
+  font-size: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.box-node-toggle.empty {
+  color: #444;
+}
+
+.box-node-type {
+  font-weight: 600;
+  color: #7ce38b;
+  min-width: 50px;
+}
+
+.box-node-size {
+  color: #888;
+  font-size: 11px;
+}
+
+.box-node-offset {
+  color: #6495ed;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.box-node-desc {
+  color: #888;
+  font-size: 11px;
+  margin-left: auto;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.box-node-desc.hover-only {
+  cursor: help;
+  opacity: 0.5;
+}
+
+.box-node-desc.hover-only:hover {
+  opacity: 1;
+}
+
+/* 详情面板 */
+.box-detail-panel {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 20px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.box-detail-panel h4 {
+  margin: 0 0 12px 0;
+  font-size: 15px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.box-type-badge {
+  background: linear-gradient(135deg, #6495ed, #4169e1);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.box-detail-info {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  flex-wrap: wrap;
+}
+
+.box-detail-row {
+  display: flex;
+  gap: 8px;
+}
+
+.box-detail-row .label {
+  color: #888;
+  font-size: 12px;
+}
+
+.box-detail-row .value {
+  color: #fff;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.box-detail-fields h5,
+.box-detail-children h5 {
+  margin: 0 0 10px 0;
+  font-size: 13px;
+  color: #aaa;
+  font-weight: 500;
+}
+
+.box-detail-fields table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.box-detail-fields th {
+  text-align: left;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  color: #888;
+  font-weight: 500;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.box-detail-fields td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.box-detail-fields tr:hover td {
+  background: rgba(100, 149, 237, 0.05);
+}
+
+.field-name {
+  color: #7ce38b;
+  font-family: monospace;
+  font-weight: 500;
+}
+
+.field-value {
+  color: #fff;
+  font-family: monospace;
+}
+
+.field-desc {
+  color: #888;
+  font-size: 11px;
+}
+
+.field-desc-hint {
+  cursor: help;
+  opacity: 0.5;
+}
+
+.field-desc-hint:hover {
+  opacity: 1;
+}
+
+.box-detail-children .children-summary {
+  color: #888;
+  font-family: monospace;
+  font-size: 12px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  word-break: break-word;
+}
+
+/* 滚动条样式 */
+.box-tree-content::-webkit-scrollbar,
+.box-detail-panel::-webkit-scrollbar,
+.box-hex-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.box-tree-content::-webkit-scrollbar-track,
+.box-detail-panel::-webkit-scrollbar-track,
+.box-hex-content::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.box-tree-content::-webkit-scrollbar-thumb,
+.box-detail-panel::-webkit-scrollbar-thumb,
+.box-hex-content::-webkit-scrollbar-thumb {
+  background: rgba(100, 149, 237, 0.3);
+  border-radius: 4px;
+}
+
+.box-tree-content::-webkit-scrollbar-thumb:hover,
+.box-detail-panel::-webkit-scrollbar-thumb:hover,
+.box-hex-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 149, 237, 0.5);
+}
+
+/* 字段高亮 */
+.hex-highlight-field {
+  background: rgba(245, 158, 11, 0.5) !important;
+  color: #fcd34d !important;
+  animation: field-pulse 1s ease-in-out;
+}
+
+.ascii-highlight-field {
+  background: rgba(245, 158, 11, 0.35);
+  color: #fcd34d;
+}
+
+@keyframes field-pulse {
+
+  0%,
+  100% {
+    background: rgba(245, 158, 11, 0.5);
+  }
+
+  50% {
+    background: rgba(245, 158, 11, 0.7);
+  }
+}
+
+/* 清除选择按钮 */
+.hex-clear-selection {
+  background: rgba(245, 158, 11, 0.2);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #fcd34d;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.hex-clear-selection:hover {
+  background: rgba(245, 158, 11, 0.35);
+}
+
+/* 字段表格交互样式 */
+.box-detail-fields tr.clickable {
+  cursor: pointer;
+}
+
+.box-detail-fields tr.clickable:hover td {
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.box-detail-fields tr.selected td {
+  background: rgba(245, 158, 11, 0.2) !important;
+}
+
+.box-detail-fields tr.selected .field-name {
+  color: #fcd34d;
+}
+
+.field-offset {
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.offset-badge {
+  background: rgba(124, 227, 139, 0.15);
+  color: #7ce38b;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+
+.offset-na {
+  color: #555;
+}
+
+.field-hint {
+  font-weight: 400;
+  font-size: 11px;
+  color: #666;
+  margin-left: 8px;
+}
+
+/* 字段分组样式 */
+.field-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-group {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.field-group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s;
+}
+
+.field-group-header:hover {
+  background: rgba(100, 149, 237, 0.15);
+}
+
+.group-toggle {
+  color: #6495ed;
+  font-size: 10px;
+  width: 12px;
+}
+
+.group-range {
+  color: #7ce38b;
+  font-family: monospace;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.group-count {
+  color: #888;
+  font-size: 12px;
+}
+
+.field-group-content {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.field-group-content table {
+  margin: 0;
+}

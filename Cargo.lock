@@ -248,11 +248,14 @@ version = "0.5.0"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",
+ "once_cell",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "web-sys",
 ]
 
 [[package]]

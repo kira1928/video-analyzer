@@ -1,17 +1,18 @@
 # Video Analyzer
 
-FLV 视频文件分析工具 - 基于 Rust + WASM + React
+FLV/MP4/TS 视频文件分析工具 - 基于 Rust + WASM + React
 
 👉 **在线使用**: https://kira1928.github.io/video-analyzer/
 
 ## 功能
 
-- 📊 FLV 文件解析和结构分析
+- 📊 多格式支持：FLV, MP4, MPEG-TS
 - 🎬 GOP (Group of Pictures) 分析
 - ⏱️ 时间戳分布可视化
-- 🔍 Tag 详情查看（字段树 + Hex dump）
+- 🔍 Tag/Sample 详情查看
 - ⚠️ 异常检测（时间戳回退、跳跃、音视频不同步）
 - 🛠️ HEVC 工具（Annex B/HVCC 转换、codec string 生成）
+
 
 ## 快速开始
 
@@ -62,10 +63,12 @@ make dev
 video-analyzer/
 ├── src/                # Rust 源码
 │   ├── lib.rs          # WASM 导出接口
-│   ├── flv/            # FLV 解析模块
+│   ├── container/      # 容器格式解析（FLV/MP4/TS）
+│   ├── flv/            # 旧版 FLV 模块（逐步迁移中）
 │   ├── analyzer.rs     # 分析器
 │   ├── hevc.rs         # HEVC 工具
 │   └── types.rs        # 类型定义
+
 ├── web-src/            # 前端 TypeScript 源码
 └── web/                # 构建输出
 ```

@@ -52,10 +52,18 @@ export function useTimelineChart({ tags, onTagSelect }: UseTimelineChartParams) 
     const height = canvas.offsetHeight;
     const padding = 60;
 
-    const minX = Math.min(...tags.map(t => t.offset));
-    const maxX = Math.max(...tags.map(t => t.offset + t.size));
-    const minY = Math.min(...tags.map(t => t.timestamp));
-    const maxY = Math.max(...tags.map(t => t.timestamp));
+    // 使用循环计算 min/max，避免大数组时栈溢出
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+
+    for (let i = 0; i < tags.length; i++) {
+      const t = tags[i];
+      const offsetEnd = t.offset + t.size;
+      if (t.offset < minX) minX = t.offset;
+      if (offsetEnd > maxX) maxX = offsetEnd;
+      if (t.timestamp < minY) minY = t.timestamp;
+      if (t.timestamp > maxY) maxY = t.timestamp;
+    }
 
     const dataWidth = maxX - minX || 1;
     const dataHeight = maxY - minY || 1;

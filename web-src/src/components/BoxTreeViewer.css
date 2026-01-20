@@ -268,11 +268,34 @@
   background: rgba(0, 0, 0, 0.2);
 }
 
+.box-hex-content.streaming-hex {
+  padding: 0;
+}
+
 /* Hex 视图 */
 .hex-view {
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   font-size: 11px;
   line-height: 1.8;
+}
+
+.hex-view-virtual {
+  position: relative;
+}
+
+.hex-virtual-viewport {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 0 16px;
+  box-sizing: border-box;
+}
+
+.hex-empty {
+  padding: 10px 16px;
+  color: #666;
+  font-size: 12px;
 }
 
 .hex-line {

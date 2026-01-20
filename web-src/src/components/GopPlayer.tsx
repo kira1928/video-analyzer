@@ -80,6 +80,7 @@ export function GopPlayer({
   const galleryRef = useRef<HTMLDivElement>(null);
   const currentDisplayTagRef = useRef<number | null>(null);
   const autoPlayStartRef = useRef(false);
+  const hasLoadedGopTagsRef = useRef(false);
   const formatLower = (analysisResult.format || '').toLowerCase();
 
   const drawImageToCanvas = useCallback((src: string, revoke: boolean = false) => {
@@ -149,6 +150,7 @@ export function GopPlayer({
   // 注意：依赖数组只使用稳定的原始类型（字符串、数字、布尔），避免对象引用变化导致无限循环
   useEffect(() => {
     let cancelled = false;
+    hasLoadedGopTagsRef.current = false;
 
     const loadGopTags = async () => {
       setIsLoadingGopTags(true);
@@ -185,6 +187,7 @@ export function GopPlayer({
       } finally {
         if (!cancelled) {
           setIsLoadingGopTags(false);
+          hasLoadedGopTagsRef.current = true;
         }
       }
     };
@@ -238,7 +241,7 @@ export function GopPlayer({
     // 设置当前帧显示
     setCurrentFrame(index + 1);
 
-    const thumb = thumbnails[index];
+    const thumb = thumbnailsRef.current[index];
     if (thumb) {
       drawThumbnailToCanvas(thumb, tagIndex);
     }
@@ -252,7 +255,7 @@ export function GopPlayer({
     } catch (e) {
       console.error("加载缓存帧失败:", e);
     }
-  }, [fileId, thumbnails, drawBlobToCanvas, drawThumbnailToCanvas]);
+  }, [fileId, drawBlobToCanvas, drawThumbnailToCanvas]);
 
 
   // 创建缩略图
@@ -433,6 +436,10 @@ export function GopPlayer({
       return;
     }
 
+    if (gopVideoTags.length > 0) {
+      setError(null);
+    }
+
     const controller = new AbortController();
     const signal = controller.signal;
 
@@ -444,7 +451,9 @@ export function GopPlayer({
     tagsRef.current = gopVideoTags;
     setTotalFrames(gopVideoTags.length);
     if (gopVideoTags.length === 0) {
-      setError("该 GOP 没有视频帧");
+      if (hasLoadedGopTagsRef.current) {
+        setError("该 GOP 没有视频帧");
+      }
       setIsDecoding(false);
       return;
     }

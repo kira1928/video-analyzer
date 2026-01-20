@@ -1,4 +1,4 @@
-import { AnalysisResult, TagDetail, GopTagsResult, Mp4BoxTree, Mp4SampleDetail, setWasmModule, getWasmModule } from '../types';
+import { AnalysisResult, TagDetail, GopTagsResult, Mp4BoxTree, Mp4BoxChildrenResult, Mp4BoxFieldsResult, Mp4BoxSearchResult, Mp4SampleDetail, setWasmModule, getWasmModule } from '../types';
 export { getWasmModule } from '../types';
 
 /** WASM 加载状态 */
@@ -52,6 +52,10 @@ export interface StreamingMp4ParserInstance {
   parse(): Promise<AnalysisResult>;
   sample_count: number;
   read_sample_data(sampleIndex: number): Promise<Uint8Array>;
+  getMp4BoxTreeRoot(depth: number): Promise<Mp4BoxTree>;
+  getMp4BoxChildren(offset: number, size: number, boxType: string): Promise<Mp4BoxChildrenResult>;
+  getMp4BoxFields(offset: number, size: number, boxType: string, start: number, count: number): Promise<Mp4BoxFieldsResult>;
+  searchMp4Boxes(query: string): Promise<Mp4BoxSearchResult>;
 }
 
 /** 流式 FLV 解析器实例 */

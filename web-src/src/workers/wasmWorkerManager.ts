@@ -300,6 +300,48 @@ class WasmWorkerManager {
     return this.sendRequest('readSampleData', { fileId, index });
   }
 
+  async readMp4Bytes(
+    fileId: string,
+    offset: number,
+    length: number
+  ): Promise<Uint8Array> {
+    return this.sendRequest('readMp4Bytes', { fileId, offset, length });
+  }
+
+  async getMp4BoxTreeRoot(
+    fileId: string,
+    depth: number = 2
+  ): Promise<any> {
+    return this.sendRequest('getMp4BoxTreeRoot', { fileId, depth });
+  }
+
+  async getMp4BoxChildren(
+    fileId: string,
+    offset: number,
+    size: number,
+    boxType: string
+  ): Promise<any> {
+    return this.sendRequest('getMp4BoxChildren', { fileId, offset, size, boxType });
+  }
+
+  async getMp4BoxFields(
+    fileId: string,
+    offset: number,
+    size: number,
+    boxType: string,
+    start: number,
+    count: number
+  ): Promise<any> {
+    return this.sendRequest('getMp4BoxFields', { fileId, offset, size, boxType, start, count });
+  }
+
+  async searchMp4Boxes(
+    fileId: string,
+    query: string
+  ): Promise<any> {
+    return this.sendRequest('searchMp4Boxes', { fileId, query });
+  }
+
   terminate() {
     this.worker?.terminate();
     this.worker = null;

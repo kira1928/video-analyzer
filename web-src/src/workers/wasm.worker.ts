@@ -153,6 +153,67 @@ self.onmessage = async (event: MessageEvent) => {
         break;
       }
 
+      case 'readMp4Bytes': {
+        if (!wasmModule) throw new Error('WASM 未初始化');
+        const { fileId, offset, length } = payload;
+        const entry = parserCache.get(fileId);
+        if (!entry || entry.format !== 'mp4') {
+          throw new Error(`未找到 MP4 解析器: ${fileId}`);
+        }
+
+        const data = await entry.parser.readMp4Bytes(offset, length);
+        self.postMessage({ id, type: 'result', result: data });
+        break;
+      }
+
+      case 'getMp4BoxTreeRoot': {
+        if (!wasmModule) throw new Error('WASM 未初始化');
+        const { fileId, depth } = payload;
+        const entry = parserCache.get(fileId);
+        if (!entry || entry.format !== 'mp4') {
+          throw new Error(`未找到 MP4 parser: ${fileId}`);
+        }
+        const tree = await entry.parser.getMp4BoxTreeRoot(depth ?? 2);
+        self.postMessage({ id, type: 'result', result: tree });
+        break;
+      }
+
+      case 'getMp4BoxChildren': {
+        if (!wasmModule) throw new Error('WASM 未初始化');
+        const { fileId, offset, size, boxType } = payload;
+        const entry = parserCache.get(fileId);
+        if (!entry || entry.format !== 'mp4') {
+          throw new Error(`未找到 MP4 parser: ${fileId}`);
+        }
+        const result = await entry.parser.getMp4BoxChildren(offset, size, boxType);
+        self.postMessage({ id, type: 'result', result });
+        break;
+      }
+
+      case 'getMp4BoxFields': {
+        if (!wasmModule) throw new Error('WASM 未初始化');
+        const { fileId, offset, size, boxType, start, count } = payload;
+        const entry = parserCache.get(fileId);
+        if (!entry || entry.format !== 'mp4') {
+          throw new Error(`未找到 MP4 parser: ${fileId}`);
+        }
+        const result = await entry.parser.getMp4BoxFields(offset, size, boxType, start, count);
+        self.postMessage({ id, type: 'result', result });
+        break;
+      }
+
+      case 'searchMp4Boxes': {
+        if (!wasmModule) throw new Error('WASM 未初始化');
+        const { fileId, query } = payload;
+        const entry = parserCache.get(fileId);
+        if (!entry || entry.format !== 'mp4') {
+          throw new Error(`未找到 MP4 parser: ${fileId}`);
+        }
+        const result = await entry.parser.searchMp4Boxes(query);
+        self.postMessage({ id, type: 'result', result });
+        break;
+      }
+
       default:
         if (action && !action.startsWith('fileRead')) {
           throw new Error(`未知操作: ${action}`);

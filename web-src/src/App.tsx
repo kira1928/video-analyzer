@@ -46,6 +46,7 @@ function App() {
   // Box 树状态（MP4 专用）
   const [boxTree, setBoxTree] = useState<Mp4BoxTree | null>(null);
   const [showBoxTree, setShowBoxTree] = useState(false);
+  const [isBoxTreeLoading, setIsBoxTreeLoading] = useState(false);
 
   // Sample/Tag 列表分页状态
   const [tagPage, setTagPage] = useState(0);
@@ -252,6 +253,7 @@ function App() {
     setSelectedTag(null);
     setBoxTree(null);
     setShowBoxTree(false);
+    setIsBoxTreeLoading(false);
     setTagPage(0);  // 重置分页
     setJumpToIndex('');
     setCurrentFile(file);
@@ -539,16 +541,43 @@ function App() {
             {analysisResult.format?.toLowerCase() === 'mp4' && (
               <button
                 className="box-tree-btn"
-                onClick={() => {
+                onClick={async () => {
+                  if (isStreamingMode) {
+                    if (!fileId) {
+                      alert('缺少文件 ID，无法加载 Box 树');
+                      return;
+                    }
+                    if (isBoxTreeLoading) {
+                      return;
+                    }
+                    setIsBoxTreeLoading(true);
+                    try {
+                      const tree = await wasmWorker.getMp4BoxTreeRoot(fileId, 2);
+                      setBoxTree(tree);
+                      setShowBoxTree(true);
+                    } catch (e) {
+                      alert('加载 Box 树失败：' + (e instanceof Error ? e.message : String(e)));
+                    } finally {
+                      setIsBoxTreeLoading(false);
+                    }
+                    return;
+                  }
+
                   if (!boxTree || !fileData) {
-                    alert('流式模式暂不支持 Box 树（需要完整文件数据）');
+                    alert('Box 树尚未加载完成');
                     return;
                   }
                   setShowBoxTree(true);
                 }}
-                title={!boxTree || !fileData ? '流式模式暂不支持 Box 树（需要完整文件数据）' : undefined}
+                disabled={isBoxTreeLoading}
+                title={
+                  isStreamingMode
+                    ? '流式模式：按需加载 Box 树'
+                    : (!boxTree || !fileData ? 'Box 树尚未加载完成' : undefined)
+                }
               >
-                📦 查看 Box 结构 {boxTree ? `(${boxTree.totalCount} 个 Box)` : ''}
+                {isBoxTreeLoading ? '正在加载 Box 树...' : '📦 查看 Box 结构'}
+                {boxTree ? ` (${boxTree.totalCount} 个 Box)` : ''}
               </button>
             )}
           </div>
@@ -970,10 +999,12 @@ function App() {
       )}
 
       {/* Box 树查看器 (MP4 专用) */}
-      {showBoxTree && boxTree && fileData && (
+      {showBoxTree && boxTree && (fileData || isStreamingMode) && (
         <BoxTreeViewer
           boxTree={boxTree}
-          fileData={fileData}
+          fileData={fileData ?? undefined}
+          isStreamingMode={isStreamingMode}
+          fileId={fileId}
           onClose={() => setShowBoxTree(false)}
         />
       )}

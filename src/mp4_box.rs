@@ -26,6 +26,12 @@ pub struct Mp4BoxNode {
     /// 子 Box 列表（容器 box）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub children: Option<Vec<Mp4BoxNode>>,
+    /// 子 Box 数量（流式模式用于懒加载）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children_count: Option<usize>,
+    /// 是否为容器类 Box（流式模式用于展示折叠开关）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_container: Option<bool>,
 }
 
 /// Box 字段信息
@@ -81,17 +87,17 @@ const CONTAINER_BOXES: &[&[u8; 4]] = &[
 ];
 
 /// 判断是否为容器 box
-fn is_container_box(box_type: &[u8; 4]) -> bool {
+pub(crate) fn is_container_box(box_type: &[u8; 4]) -> bool {
     CONTAINER_BOXES.iter().any(|t| *t == box_type)
 }
 
 /// 判断是否为 stsd box（需要特殊处理）
-fn is_stsd_box(box_type: &[u8; 4]) -> bool {
+pub(crate) fn is_stsd_box(box_type: &[u8; 4]) -> bool {
     box_type == b"stsd"
 }
 
 /// 判断是否为 sample entry box（包含子 box 如 avcC/hvcC）
-fn is_sample_entry_box(box_type: &[u8; 4]) -> bool {
+pub(crate) fn is_sample_entry_box(box_type: &[u8; 4]) -> bool {
     // 视频/音频 sample entry types
     matches!(
         &box_type[..],
@@ -104,8 +110,23 @@ fn is_sample_entry_box(box_type: &[u8; 4]) -> bool {
     )
 }
 
+pub(crate) fn fourcc_to_string(box_type: [u8; 4]) -> String {
+    box_type
+        .iter()
+        .map(|b| {
+            if b.is_ascii_graphic() || *b == b' ' {
+                *b as char
+            } else if *b >= 0x80 {
+                char::from(*b)
+            } else {
+                '.'
+            }
+        })
+        .collect()
+}
+
 /// Box 类型说明映射
-fn get_box_description(box_type: &str) -> &'static str {
+pub(crate) fn get_box_description(box_type: &str) -> &'static str {
     match box_type {
         // 顶层 Boxes
         "ftyp" => "文件类型声明，标识 MP4 品牌和兼容性",
@@ -275,7 +296,7 @@ fn parse_boxes_recursive<R: Read + Seek>(
 
         let size = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as u64;
         let box_type_bytes: [u8; 4] = [header[4], header[5], header[6], header[7]];
-        let box_type = String::from_utf8_lossy(&box_type_bytes).to_string();
+        let box_type = fourcc_to_string(box_type_bytes);
 
         // 处理扩展大小
         let (box_size, header_size) = if size == 1 {
@@ -334,6 +355,7 @@ fn parse_boxes_recursive<R: Read + Seek>(
             (None, fields)
         };
 
+        let children_count = children.as_ref().map(|list| list.len());
         let node = Mp4BoxNode {
             box_type,
             offset: pos,
@@ -342,6 +364,12 @@ fn parse_boxes_recursive<R: Read + Seek>(
             description,
             fields,
             children,
+            children_count,
+            is_container: Some(
+                is_container_box(&box_type_bytes)
+                    || is_stsd_box(&box_type_bytes)
+                    || is_sample_entry_box(&box_type_bytes),
+            ),
         };
 
         boxes.push(node);
@@ -353,7 +381,7 @@ fn parse_boxes_recursive<R: Read + Seek>(
 }
 
 /// 解析特定 Box 的字段详情
-fn parse_box_fields<R: Read + Seek>(
+pub(crate) fn parse_box_fields<R: Read + Seek>(
     reader: &mut R,
     box_type: &str,
     content_start: u64,

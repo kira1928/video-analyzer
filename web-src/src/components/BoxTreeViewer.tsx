@@ -1,10 +1,13 @@
-import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import { Mp4BoxTree, Mp4BoxNode, BoxField } from '../types';
+import { useState, useMemo, useCallback, useRef, useEffect, RefObject } from 'react';
+import { Mp4BoxTree, Mp4BoxNode, BoxField, Mp4BoxChildrenResult, Mp4BoxFieldsResult, Mp4BoxSearchResult } from '../types';
+import { wasmWorker } from '../workers/wasmWorkerManager';
 import './BoxTreeViewer.css';
 
 interface BoxTreeViewerProps {
   boxTree: Mp4BoxTree;
-  fileData: Uint8Array;
+  fileData?: Uint8Array;
+  isStreamingMode?: boolean;
+  fileId?: string;
   onClose: () => void;
 }
 
@@ -25,12 +28,36 @@ interface HighlightRange {
   type: 'header' | 'content' | 'field';
 }
 
-export function BoxTreeViewer({ boxTree, fileData, onClose }: BoxTreeViewerProps) {
+const HEX_BYTES_PER_LINE = 16;
+const STREAMING_HEX_CHUNK_BYTES = 4096;
+const STREAMING_HEX_LINE_HEIGHT = 20;
+const STREAMING_HEX_OVERSCAN_LINES = 40;
+const STREAMING_HEX_MAX_CHUNKS = 24;
+
+
+export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, fileId, onClose }: BoxTreeViewerProps) {
+  const [treeState, setTreeState] = useState<Mp4BoxTree>(boxTree);
+  const [streamingSearchTree, setStreamingSearchTree] = useState<Mp4BoxTree | null>(null);
+  const [streamingMatchPaths, setStreamingMatchPaths] = useState<Set<string>>(new Set());
+  const [streamingSearchResults, setStreamingSearchResults] = useState<string[]>([]);
+  const [loadingNodes, setLoadingNodes] = useState<Set<string>>(new Set());
+
+  interface StreamingFieldState {
+    headerFields: BoxField[];
+    entryCount?: number;
+    entryGroups: Map<number, BoxField[]>;
+    loadingGroups: Set<number>;
+    isLoading?: boolean;
+  }
+
+  const [streamingFieldsMap, setStreamingFieldsMap] = useState<Map<string, StreamingFieldState>>(new Map());
+
+  const getNodeKey = useCallback((node: Mp4BoxNode) => `${node.offset}-${node.size}`, []);
   // 展开状态管理
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(() => {
     // 默认展开第一层和 moov
     const expanded = new Set<string>();
-    boxTree.boxes.forEach((box, i) => {
+    treeState.boxes.forEach((box, i) => {
       expanded.add(String(i));
       if (box.boxType === 'moov' && box.children) {
         box.children.forEach((_child, j) => {
@@ -41,12 +68,65 @@ export function BoxTreeViewer({ boxTree, fileData, onClose }: BoxTreeViewerProps
     return expanded;
   });
 
+  useEffect(() => {
+    setTreeState(boxTree);
+    const expanded = new Set<string>();
+    boxTree.boxes.forEach((box, i) => {
+      expanded.add(String(i));
+      if (box.boxType === 'moov' && box.children) {
+        box.children.forEach((_child, j) => {
+          expanded.add(`${i}-${j}`);
+        });
+      }
+    });
+    setExpandedNodes(expanded);
+    setStreamingSearchTree(null);
+    setStreamingMatchPaths(new Set());
+    setStreamingSearchResults([]);
+    setStreamingFieldsMap(new Map());
+    setLoadingNodes(new Set());
+    setSelectedNode(null);
+    setSelectedField(null);
+  }, [boxTree]);
+
   // 说明显示模式
   const [descriptionMode, setDescriptionMode] = useState<DescriptionMode>('hover');
 
   // 搜索过滤
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+
+  useEffect(() => {
+    if (!isStreamingMode || !fileId) return;
+    const query = searchQuery.trim();
+    if (!query) {
+      setStreamingSearchTree(null);
+      setStreamingMatchPaths(new Set());
+      setStreamingSearchResults([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await wasmWorker.searchMp4Boxes(fileId, query) as Mp4BoxSearchResult;
+        if (cancelled) return;
+        const paths = result.matchPaths.map(path => path.join('-'));
+        setStreamingSearchTree(result.tree);
+        setStreamingMatchPaths(new Set(paths));
+        setStreamingSearchResults(paths);
+      } catch (e) {
+        if (!cancelled) {
+          setStreamingSearchTree(null);
+          setStreamingMatchPaths(new Set());
+          setStreamingSearchResults([]);
+        }
+      }
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [searchQuery, isStreamingMode, fileId]);
 
   // 选中的节点
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
@@ -57,35 +137,102 @@ export function BoxTreeViewer({ boxTree, fileData, onClose }: BoxTreeViewerProps
   // Hex viewer 引用（用于滚动）
   const hexContainerRef = useRef<HTMLDivElement>(null);
 
+  const displayTree = useMemo(
+    () => (isStreamingMode && streamingSearchTree ? streamingSearchTree : treeState),
+    [isStreamingMode, streamingSearchTree, treeState]
+  );
+
   // 当前选中的 Box 信息（用于 Hex 高亮）
   const selectedBox = useMemo(() => {
     if (!selectedNode) return null;
     const indices = selectedNode.split('-').map(Number);
-    let current: Mp4BoxNode | undefined = boxTree.boxes[indices[0]];
+    let current: Mp4BoxNode | undefined = displayTree.boxes[indices[0]];
     for (let i = 1; i < indices.length && current; i++) {
       current = current.children?.[indices[i]];
     }
     return current || null;
-  }, [boxTree, selectedNode]);
+  }, [displayTree, selectedNode]);
+
+  const findNodeByPath = useCallback((nodes: Mp4BoxNode[], path: string): Mp4BoxNode | null => {
+    const indices = path.split('-').map(Number);
+    let current: Mp4BoxNode | undefined;
+    let currentList = nodes;
+    for (const idx of indices) {
+      current = currentList[idx];
+      if (!current) return null;
+      currentList = current.children ?? [];
+    }
+    return current ?? null;
+  }, []);
+
+  const updateNodeAtPath = useCallback((tree: Mp4BoxTree, path: string, updater: (node: Mp4BoxNode) => Mp4BoxNode): Mp4BoxTree => {
+    const indices = path.split('-').map(Number);
+    const updateLevel = (nodes: Mp4BoxNode[], depth: number): Mp4BoxNode[] => {
+      const idx = indices[depth];
+      return nodes.map((node, i) => {
+        if (i != idx) return node;
+        if (depth == indices.length - 1) {
+          return updater(node);
+        }
+        const childNodes = node.children ?? [];
+        return { ...node, children: updateLevel(childNodes, depth + 1) };
+      });
+    };
+    return { ...tree, boxes: updateLevel(tree.boxes, 0) };
+  }, []);
+
+  const applyTreeUpdate = useCallback((updater: (tree: Mp4BoxTree) => Mp4BoxTree) => {
+    if (isStreamingMode && streamingSearchTree) {
+      setStreamingSearchTree(prev => (prev ? updater(prev) : prev));
+    } else {
+      setTreeState(prev => updater(prev));
+    }
+  }, [isStreamingMode, streamingSearchTree]);
+
+  const loadChildrenIfNeeded = useCallback(async (path: string) => {
+    if (!isStreamingMode || !fileId) return;
+    const node = findNodeByPath(displayTree.boxes, path);
+    if (!node || node.children || !node.isContainer) return;
+    if (loadingNodes.has(path)) return;
+    setLoadingNodes(prev => {
+      const next = new Set(prev);
+      next.add(path);
+      return next;
+    });
+    try {
+      const result = await wasmWorker.getMp4BoxChildren(fileId, node.offset, node.size, node.boxType) as Mp4BoxChildrenResult;
+      applyTreeUpdate(tree => updateNodeAtPath(tree, path, target => ({
+        ...target,
+        children: result.children,
+        childrenCount: result.totalCount
+      })));
+    } finally {
+      setLoadingNodes(prev => {
+        const next = new Set(prev);
+        next.delete(path);
+        return next;
+      });
+    }
+  }, [applyTreeUpdate, displayTree, fileId, findNodeByPath, isStreamingMode, loadingNodes, updateNodeAtPath]);
 
   // 生成 Hex 数据（限制显示范围以提高性能）
   const hexData = useMemo(() => {
-    if (!selectedBox) return { lines: [], startOffset: 0, endOffset: 0 };
+    if (!selectedBox || !fileData) return { lines: [], startOffset: 0, endOffset: 0 };
 
     // 限制最大显示 4KB 的 hex dump
-    const maxBytes = 4096;
+    const maxBytes = STREAMING_HEX_CHUNK_BYTES;
     const boxStart = Number(selectedBox.offset);
     const boxEnd = Math.min(boxStart + Number(selectedBox.size), boxStart + maxBytes);
 
     // 对齐到 16 字节边界
-    const alignedStart = Math.floor(boxStart / 16) * 16;
-    const alignedEnd = Math.ceil(boxEnd / 16) * 16;
+    const alignedStart = Math.floor(boxStart / HEX_BYTES_PER_LINE) * HEX_BYTES_PER_LINE;
+    const alignedEnd = Math.ceil(boxEnd / HEX_BYTES_PER_LINE) * HEX_BYTES_PER_LINE;
 
     const lines: HexLine[] = [];
-    for (let offset = alignedStart; offset < alignedEnd && offset < fileData.length; offset += 16) {
+    for (let offset = alignedStart; offset < alignedEnd && offset < fileData.length; offset += HEX_BYTES_PER_LINE) {
       const bytes: number[] = [];
       let ascii = '';
-      for (let i = 0; i < 16 && offset + i < fileData.length; i++) {
+      for (let i = 0; i < HEX_BYTES_PER_LINE && offset + i < fileData.length; i++) {
         const byte = fileData[offset + i];
         bytes.push(byte);
         ascii += byte >= 32 && byte < 127 ? String.fromCharCode(byte) : '.';
@@ -135,16 +282,137 @@ export function BoxTreeViewer({ boxTree, fileData, onClose }: BoxTreeViewerProps
   useEffect(() => {
     if (selectedField && selectedField.offset !== undefined && selectedBox && hexContainerRef.current) {
       const fieldAbsoluteOffset = Number(selectedBox.offset) + selectedBox.headerSize + selectedField.offset;
-      const lineIndex = Math.floor((fieldAbsoluteOffset - hexData.startOffset) / 16);
-      const lineElement = hexContainerRef.current.querySelector(`.hex-line:nth-child(${lineIndex + 1})`);
-      lineElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const baseOffset = fileData ? hexData.startOffset : Number(selectedBox.offset);
+      const lineIndex = Math.floor((fieldAbsoluteOffset - baseOffset) / HEX_BYTES_PER_LINE);
+      if (fileData) {
+        const lineElement = hexContainerRef.current.querySelector(`.hex-line:nth-child(${lineIndex + 1})`);
+        lineElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else {
+        hexContainerRef.current.scrollTo({
+          top: lineIndex * STREAMING_HEX_LINE_HEIGHT,
+          behavior: 'smooth',
+        });
+      }
     }
-  }, [selectedField, selectedBox, hexData.startOffset]);
+  }, [fileData, selectedField, selectedBox, hexData.startOffset]);
 
   // 选中节点时重置字段选择
   useEffect(() => {
     setSelectedField(null);
   }, [selectedNode]);
+
+  useEffect(() => {
+    if (!isStreamingMode || !fileId || !selectedBox) return;
+    const key = getNodeKey(selectedBox);
+    if (streamingFieldsMap.has(key)) return;
+
+    let cancelled = false;
+    setStreamingFieldsMap(prev => {
+      const next = new Map(prev);
+      next.set(key, {
+        headerFields: [],
+        entryGroups: new Map(),
+        loadingGroups: new Set(),
+        isLoading: true,
+      });
+      return next;
+    });
+
+    (async () => {
+      try {
+        const result = await wasmWorker.getMp4BoxFields(
+          fileId,
+          selectedBox.offset,
+          selectedBox.size,
+          selectedBox.boxType,
+          0,
+          0
+        ) as Mp4BoxFieldsResult;
+        if (cancelled) return;
+        setStreamingFieldsMap(prev => {
+          const next = new Map(prev);
+          const existing = next.get(key);
+          next.set(key, {
+            headerFields: result.headerFields,
+            entryCount: result.entryCount,
+            entryGroups: existing?.entryGroups ?? new Map(),
+            loadingGroups: existing?.loadingGroups ?? new Set(),
+            isLoading: false,
+          });
+          return next;
+        });
+      } catch {
+        if (!cancelled) {
+          setStreamingFieldsMap(prev => {
+            const next = new Map(prev);
+            next.delete(key);
+            return next;
+          });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId, getNodeKey, isStreamingMode, selectedBox, streamingFieldsMap]);
+
+  const selectedBoxKey = selectedBox ? getNodeKey(selectedBox) : null;
+  const streamingFieldState = selectedBoxKey ? streamingFieldsMap.get(selectedBoxKey) : undefined;
+
+  const loadFieldGroup = useCallback((node: Mp4BoxNode, groupIndex: number) => {
+    if (!isStreamingMode || !fileId) return;
+    const key = getNodeKey(node);
+    const state = streamingFieldsMap.get(key);
+    if (!state || state.entryGroups.has(groupIndex) || state.loadingGroups.has(groupIndex)) return;
+
+    setStreamingFieldsMap(prev => {
+      const next = new Map(prev);
+      const current = next.get(key);
+      if (!current) return prev;
+      const loadingGroups = new Set(current.loadingGroups);
+      loadingGroups.add(groupIndex);
+      next.set(key, { ...current, loadingGroups });
+      return next;
+    });
+
+    const start = groupIndex * ITEMS_PER_GROUP;
+    const count = ITEMS_PER_GROUP;
+
+    (async () => {
+      try {
+        const result = await wasmWorker.getMp4BoxFields(
+          fileId,
+          node.offset,
+          node.size,
+          node.boxType,
+          start,
+          count
+        ) as Mp4BoxFieldsResult;
+        setStreamingFieldsMap(prev => {
+          const next = new Map(prev);
+          const current = next.get(key);
+          if (!current) return prev;
+          const entryGroups = new Map(current.entryGroups);
+          entryGroups.set(groupIndex, result.entries);
+          const loadingGroups = new Set(current.loadingGroups);
+          loadingGroups.delete(groupIndex);
+          next.set(key, { ...current, entryGroups, loadingGroups });
+          return next;
+        });
+      } catch {
+        setStreamingFieldsMap(prev => {
+          const next = new Map(prev);
+          const current = next.get(key);
+          if (!current) return prev;
+          const loadingGroups = new Set(current.loadingGroups);
+          loadingGroups.delete(groupIndex);
+          next.set(key, { ...current, loadingGroups });
+          return next;
+        });
+      }
+    })();
+  }, [fileId, getNodeKey, isStreamingMode, streamingFieldsMap]);
 
   // 选中节点时滚动 Hex viewer 到顶部
   useEffect(() => {
@@ -155,6 +423,7 @@ export function BoxTreeViewer({ boxTree, fileData, onClose }: BoxTreeViewerProps
 
   // 一键展开/收起所有
   const expandAll = useCallback(() => {
+    if (isStreamingMode) return;
     const allPaths = new Set<string>();
     const collectPaths = (nodes: Mp4BoxNode[], prefix: string) => {
       nodes.forEach((node, i) => {
@@ -165,9 +434,9 @@ export function BoxTreeViewer({ boxTree, fileData, onClose }: BoxTreeViewerProps
         }
       });
     };
-    collectPaths(boxTree.boxes, '');
+    collectPaths(treeState.boxes, '');
     setExpandedNodes(allPaths);
-  }, [boxTree]);
+  }, [isStreamingMode, treeState]);
 
   const collapseAll = useCallback(() => {
     setExpandedNodes(new Set());
@@ -175,6 +444,10 @@ export function BoxTreeViewer({ boxTree, fileData, onClose }: BoxTreeViewerProps
 
   // 切换节点展开状态
   const toggleNode = useCallback((path: string) => {
+    const isExpanding = !expandedNodes.has(path);
+    if (isExpanding) {
+      void loadChildrenIfNeeded(path);
+    }
     setExpandedNodes(prev => {
       const next = new Set(prev);
       if (next.has(path)) {
@@ -184,17 +457,41 @@ export function BoxTreeViewer({ boxTree, fileData, onClose }: BoxTreeViewerProps
       }
       return next;
     });
-  }, []);
+  }, [expandedNodes, loadChildrenIfNeeded]);
+
+  useEffect(() => {
+    if (!isStreamingMode || !fileId) return;
+    expandedNodes.forEach(path => {
+      const node = findNodeByPath(displayTree.boxes, path);
+      if (!node || !node.isContainer) return;
+      if (node.children !== undefined) return;
+      if (node.childrenCount === 0) return;
+      if (loadingNodes.has(path)) return;
+      void loadChildrenIfNeeded(path);
+    });
+  }, [displayTree, expandedNodes, fileId, findNodeByPath, isStreamingMode, loadChildrenIfNeeded, loadingNodes]);
 
   // 过滤后的 box 树 & 搜索匹配列表
   const { filteredBoxes, matchPaths, searchResults } = useMemo(() => {
+    if (isStreamingMode) {
+      const activeTree = streamingSearchTree ?? treeState;
+      const hasQuery = searchQuery.trim().length > 0;
+      return {
+        filteredBoxes: activeTree.boxes,
+        matchPaths: hasQuery ? streamingMatchPaths : new Set<string>(),
+        searchResults: hasQuery
+          ? streamingSearchResults.map(path => ({ path }))
+          : [] as { path: string; node?: Mp4BoxNode }[],
+      };
+    }
+
     if (!searchQuery.trim()) {
-      return { filteredBoxes: boxTree.boxes, matchPaths: new Set<string>(), searchResults: [] as { path: string; node: Mp4BoxNode }[] };
+      return { filteredBoxes: treeState.boxes, matchPaths: new Set<string>(), searchResults: [] as { path: string; node?: Mp4BoxNode }[] };
     }
 
     const query = searchQuery.toLowerCase();
     const matchPaths = new Set<string>();
-    const results: { path: string; node: Mp4BoxNode }[] = [];
+    const results: { path: string; node?: Mp4BoxNode }[] = [];
 
     const filterNode = (node: Mp4BoxNode, path: string): Mp4BoxNode | null => {
       const matches = node.boxType.toLowerCase().includes(query) ||
@@ -222,12 +519,12 @@ export function BoxTreeViewer({ boxTree, fileData, onClose }: BoxTreeViewerProps
       return null;
     };
 
-    const filtered = boxTree.boxes
+    const filtered = treeState.boxes
       .map((node, idx) => filterNode(node, String(idx)))
       .filter((n): n is Mp4BoxNode => n !== null);
 
     return { filteredBoxes: filtered, matchPaths, searchResults: results };
-  }, [boxTree, searchQuery]);
+  }, [isStreamingMode, streamingSearchTree, streamingMatchPaths, streamingSearchResults, treeState, searchQuery]);
 
   // 搜索重置匹配索引
   useEffect(() => {
@@ -277,7 +574,7 @@ export function BoxTreeViewer({ boxTree, fileData, onClose }: BoxTreeViewerProps
       <div className="box-tree-modal box-tree-modal-with-hex" onClick={e => e.stopPropagation()}>
         <div className="box-tree-header">
           <h3>📦 MP4 Box 结构</h3>
-          <span className="box-tree-count">共 {boxTree.totalCount} 个 Box</span>
+          <span className="box-tree-count">共 {displayTree.totalCount} 个 Box</span>
           <button className="box-tree-close" onClick={onClose}>×</button>
         </div>
 
@@ -307,8 +604,14 @@ export function BoxTreeViewer({ boxTree, fileData, onClose }: BoxTreeViewerProps
           </div>
 
           <div className="box-tree-actions">
-            <button onClick={expandAll} title="展开全部">📂 全部展开</button>
-            <button onClick={collapseAll} title="收起全部">📁 全部收起</button>
+            <button
+              onClick={expandAll}
+              disabled={isStreamingMode}
+              title={isStreamingMode ? '流式模式请使用搜索定位' : '展开全部'}
+            >
+              展开全部
+            </button>
+            <button onClick={collapseAll} title="收起全部">全部收起</button>
           </div>
 
           <div className="box-tree-desc-mode">
@@ -337,6 +640,7 @@ export function BoxTreeViewer({ boxTree, fileData, onClose }: BoxTreeViewerProps
                 descriptionMode={descriptionMode}
                 onToggle={toggleNode}
                 onSelect={setSelectedNode}
+                loadingPaths={loadingNodes}
                 parentPath=""
               />
             </div>
@@ -347,39 +651,80 @@ export function BoxTreeViewer({ boxTree, fileData, onClose }: BoxTreeViewerProps
             {selectedBox ? (
               <>
                 {/* Hex Viewer */}
-                <div className="box-hex-panel">
-                  <div className="box-hex-header">
-                    <span>🔢 二进制内容</span>
-                    <span className="box-hex-info">
-                      {selectedBox.boxType} @ 0x{selectedBox.offset.toString(16).toUpperCase()}
-                      ({formatSize(selectedBox.size)})
-                      {selectedBox.size > 4096 && <span className="hex-truncated"> - 仅显示前 4KB</span>}
-                    </span>
-                    {selectedField && (
-                      <button
-                        className="hex-clear-selection"
-                        onClick={() => setSelectedField(null)}
-                        title="清除字段选择"
-                      >
-                        ✕ 清除选择
-                      </button>
-                    )}
+                {fileData ? (
+                  <div className="box-hex-panel">
+                    <div className="box-hex-header">
+                      <span>原始二进制内容</span>
+                      <span className="box-hex-info">
+                        {selectedBox.boxType} @ 0x{selectedBox.offset.toString(16).toUpperCase()}
+                        ({formatSize(selectedBox.size)})
+                        {selectedBox.size > 4096 && <span className="hex-truncated"> - 仅显示前 4KB</span>}
+                      </span>
+                      {selectedField && (
+                        <button
+                          className="hex-clear-selection"
+                          onClick={() => setSelectedField(null)}
+                          title="清除字段选择"
+                        >
+                          × 清除选择
+                        </button>
+                      )}
+                    </div>
+                    <div className="box-hex-content" ref={hexContainerRef}>
+                      <HexView
+                        lines={hexData.lines}
+                        boxStart={Number(selectedBox.offset)}
+                        highlightRanges={highlightRanges}
+                      />
+                    </div>
                   </div>
-                  <div className="box-hex-content" ref={hexContainerRef}>
-                    <HexView
-                      lines={hexData.lines}
-                      boxStart={Number(selectedBox.offset)}
-                      highlightRanges={highlightRanges}
-                    />
+                ) : (isStreamingMode && fileId ? (
+                  <div className="box-hex-panel">
+                    <div className="box-hex-header">
+                      <span>原始二进制内容</span>
+                      <span className="box-hex-info">
+                        {selectedBox.boxType} @ 0x{selectedBox.offset.toString(16).toUpperCase()}
+                        ({formatSize(selectedBox.size)}) - 流式按需加载
+                      </span>
+                      {selectedField && (
+                        <button
+                          className="hex-clear-selection"
+                          onClick={() => setSelectedField(null)}
+                          title="清除字段选择"
+                        >
+                          × 清除选择
+                        </button>
+                      )}
+                    </div>
+                    <div className="box-hex-content streaming-hex" ref={hexContainerRef}>
+                      <StreamingHexView
+                        fileId={fileId}
+                        box={selectedBox}
+                        highlightRanges={highlightRanges}
+                        containerRef={hexContainerRef}
+                      />
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="box-hex-panel box-hex-panel-disabled">
+                    <div className="box-hex-header">
+                      <span>原始二进制内容</span>
+                      <span className="box-hex-info">流式模式暂不支持 Hex 预览</span>
+                    </div>
+                    <div className="box-hex-content">
+                      <div className="box-hex-placeholder" />
+                    </div>
+                  </div>
+                ))}
 
-                {/* 详情面板 */}
+                {/* ?情面板 */}
                 <BoxDetailPanel
                   node={selectedBox}
                   descriptionMode={descriptionMode}
                   selectedField={selectedField}
                   onFieldSelect={setSelectedField}
+                  streamingFieldState={streamingFieldState}
+                  onLoadFieldGroup={(groupIndex) => loadFieldGroup(selectedBox, groupIndex)}
                 />
               </>
             ) : (
@@ -436,9 +781,9 @@ function HexView({ lines, boxStart, highlightRanges }: HexViewProps) {
               );
             })}
             {/* 填充空白以对齐 */}
-            {line.bytes.length < 16 && (
+            {line.bytes.length < HEX_BYTES_PER_LINE && (
               <span className="hex-padding">
-                {'   '.repeat(16 - line.bytes.length)}
+                {'   '.repeat(HEX_BYTES_PER_LINE - line.bytes.length)}
               </span>
             )}
           </span>
@@ -457,6 +802,279 @@ function HexView({ lines, boxStart, highlightRanges }: HexViewProps) {
   );
 }
 
+interface StreamingHexViewProps {
+  fileId: string;
+  box: Mp4BoxNode;
+  highlightRanges: HighlightRange[];
+  containerRef: RefObject<HTMLDivElement>;
+}
+
+function StreamingHexView({ fileId, box, highlightRanges, containerRef }: StreamingHexViewProps) {
+  const totalBytes = Number(box.size);
+  const totalLines = Math.ceil(totalBytes / HEX_BYTES_PER_LINE);
+  const [viewport, setViewport] = useState({ start: 0, end: 0 });
+  const [, setRenderTick] = useState(0);
+  const cacheRef = useRef<Map<number, Uint8Array>>(new Map());
+  const pendingRef = useRef<Set<number>>(new Set());
+  const accessRef = useRef<Map<number, number>>(new Map());
+  const accessTickRef = useRef(0);
+  const activeKeyRef = useRef('');
+  const visibleChunkRangeRef = useRef<{ start: number; end: number } | null>(null);
+  const isMountedRef = useRef(true);
+
+  const getByteHighlight = useCallback((globalOffset: number): string => {
+    for (const range of highlightRanges) {
+      if (globalOffset >= range.start && globalOffset < range.end) {
+        switch (range.type) {
+          case 'header': return 'hex-highlight-header';
+          case 'field': return 'hex-highlight-field';
+          case 'content': return 'hex-highlight-content';
+        }
+      }
+    }
+    return '';
+  }, [highlightRanges]);
+
+  const markAccess = useCallback((chunkIndex: number) => {
+    accessTickRef.current += 1;
+    accessRef.current.set(chunkIndex, accessTickRef.current);
+  }, []);
+
+  const evictChunks = useCallback(() => {
+    const cache = cacheRef.current;
+    if (cache.size <= STREAMING_HEX_MAX_CHUNKS) return;
+
+    const keep = visibleChunkRangeRef.current;
+    const candidates = Array.from(cache.keys()).filter(idx => {
+      if (!keep) return true;
+      return idx < keep.start || idx > keep.end;
+    });
+
+    candidates.sort((a, b) => {
+      const aScore = accessRef.current.get(a) ?? 0;
+      const bScore = accessRef.current.get(b) ?? 0;
+      return aScore - bScore;
+    });
+
+    while (cache.size > STREAMING_HEX_MAX_CHUNKS && candidates.length > 0) {
+      const idx = candidates.shift()!;
+      cache.delete(idx);
+      accessRef.current.delete(idx);
+    }
+  }, []);
+
+  const requestChunk = useCallback(async (chunkIndex: number) => {
+    if (pendingRef.current.has(chunkIndex)) return;
+    if (cacheRef.current.has(chunkIndex)) return;
+
+    const baseOffset = chunkIndex * STREAMING_HEX_CHUNK_BYTES;
+    const remaining = totalBytes - baseOffset;
+    if (remaining <= 0) return;
+
+    const length = Math.min(STREAMING_HEX_CHUNK_BYTES, remaining);
+    pendingRef.current.add(chunkIndex);
+    const requestKey = `${fileId}-${box.offset}-${box.size}`;
+
+    try {
+      const data = await wasmWorker.readMp4Bytes(
+        fileId,
+        Number(box.offset) + baseOffset,
+        length
+      );
+      if (!isMountedRef.current || activeKeyRef.current !== requestKey) {
+        return;
+      }
+      cacheRef.current.set(chunkIndex, data);
+      markAccess(chunkIndex);
+      evictChunks();
+      setRenderTick(tick => tick + 1);
+    } finally {
+      pendingRef.current.delete(chunkIndex);
+    }
+  }, [box.offset, box.size, evictChunks, fileId, markAccess, totalBytes]);
+
+  const ensureChunksForLines = useCallback((startLine: number, endLine: number) => {
+    if (totalBytes === 0) return;
+    const firstByte = startLine * HEX_BYTES_PER_LINE;
+    const lastByte = Math.min(totalBytes, (endLine + 1) * HEX_BYTES_PER_LINE);
+    if (lastByte <= firstByte) return;
+
+    const startChunk = Math.floor(firstByte / STREAMING_HEX_CHUNK_BYTES);
+    const endChunk = Math.floor((lastByte - 1) / STREAMING_HEX_CHUNK_BYTES);
+    visibleChunkRangeRef.current = { start: startChunk, end: endChunk };
+
+    for (let chunkIndex = startChunk; chunkIndex <= endChunk; chunkIndex += 1) {
+      if (cacheRef.current.has(chunkIndex)) {
+        markAccess(chunkIndex);
+        continue;
+      }
+      void requestChunk(chunkIndex);
+    }
+  }, [markAccess, requestChunk, totalBytes]);
+
+  const updateViewport = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    if (totalLines <= 0) {
+      setViewport({ start: 0, end: -1 });
+      return;
+    }
+    const height = el.clientHeight;
+    const scrollTop = el.scrollTop;
+    const startLine = Math.max(0, Math.floor(scrollTop / STREAMING_HEX_LINE_HEIGHT) - STREAMING_HEX_OVERSCAN_LINES);
+    const endLine = Math.min(totalLines - 1, Math.ceil((scrollTop + height) / STREAMING_HEX_LINE_HEIGHT) + STREAMING_HEX_OVERSCAN_LINES);
+    setViewport({ start: startLine, end: endLine });
+    ensureChunksForLines(startLine, endLine);
+  }, [containerRef, ensureChunksForLines, totalLines]);
+
+  useEffect(() => {
+    const key = `${fileId}-${box.offset}-${box.size}`;
+    activeKeyRef.current = key;
+    cacheRef.current.clear();
+    pendingRef.current.clear();
+    accessRef.current.clear();
+    accessTickRef.current = 0;
+    visibleChunkRangeRef.current = null;
+    setViewport({ start: 0, end: 0 });
+    setRenderTick(tick => tick + 1);
+
+    const el = containerRef.current;
+    if (el) {
+      el.scrollTop = 0;
+    }
+
+    requestAnimationFrame(() => {
+      updateViewport();
+    });
+  }, [box.offset, box.size, containerRef, fileId, updateViewport]);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let rafId = 0;
+
+    const handleScroll = () => {
+      if (rafId) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = 0;
+        updateViewport();
+      });
+    };
+
+    el.addEventListener('scroll', handleScroll);
+    updateViewport();
+
+    return () => {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+      el.removeEventListener('scroll', handleScroll);
+    };
+  }, [containerRef, updateViewport]);
+
+  if (totalLines <= 0) {
+    return <div className="hex-empty">暂无可显示数据</div>;
+  }
+
+  const startOffset = viewport.start * STREAMING_HEX_LINE_HEIGHT;
+  const visibleLines = [];
+  for (let lineIndex = viewport.start; lineIndex <= viewport.end; lineIndex += 1) {
+    const lineOffset = lineIndex * HEX_BYTES_PER_LINE;
+    const absoluteOffset = Number(box.offset) + lineOffset;
+    const bytes: Array<number | null> = [];
+    const asciiChars: string[] = [];
+
+    for (let i = 0; i < HEX_BYTES_PER_LINE; i += 1) {
+      const byteOffset = lineOffset + i;
+      if (byteOffset >= totalBytes) {
+        bytes.push(null);
+        asciiChars.push(' ');
+        continue;
+      }
+
+      const chunkIndex = Math.floor(byteOffset / STREAMING_HEX_CHUNK_BYTES);
+      const chunk = cacheRef.current.get(chunkIndex);
+      let byte: number | null = null;
+      if (chunk) {
+        const innerOffset = byteOffset - chunkIndex * STREAMING_HEX_CHUNK_BYTES;
+        if (innerOffset >= 0 && innerOffset < chunk.length) {
+          byte = chunk[innerOffset];
+        }
+      }
+
+      if (byte === null) {
+        bytes.push(null);
+        asciiChars.push(' ');
+      } else {
+        bytes.push(byte);
+        asciiChars.push(byte >= 32 && byte < 127 ? String.fromCharCode(byte) : '.');
+      }
+    }
+
+    visibleLines.push({
+      index: lineIndex,
+      offset: absoluteOffset,
+      bytes,
+      ascii: asciiChars,
+    });
+  }
+
+  return (
+    <div
+      className="hex-view hex-view-virtual"
+      style={{ height: `${totalLines * STREAMING_HEX_LINE_HEIGHT}px` }}
+    >
+      <div
+        className="hex-virtual-viewport"
+        style={{ transform: `translateY(${startOffset}px)` }}
+      >
+        {visibleLines.map(line => (
+          <div
+            key={line.index}
+            className="hex-line"
+            style={{ height: STREAMING_HEX_LINE_HEIGHT, lineHeight: `${STREAMING_HEX_LINE_HEIGHT}px` }}
+          >
+            <span className="hex-offset">
+              {line.offset.toString(16).toUpperCase().padStart(8, '0')}
+            </span>
+            <span className="hex-bytes">
+              {line.bytes.map((byte, byteIndex) => {
+                const globalOffset = line.offset + byteIndex;
+                const highlightClass = byte !== null ? getByteHighlight(globalOffset) : '';
+                return (
+                  <span key={byteIndex} className={`hex-byte ${highlightClass}`}>
+                    {byte === null ? '--' : byte.toString(16).toUpperCase().padStart(2, '0')}
+                  </span>
+                );
+              })}
+              {line.bytes.length < HEX_BYTES_PER_LINE && (
+                <span className="hex-padding">
+                  {'   '.repeat(HEX_BYTES_PER_LINE - line.bytes.length)}
+                </span>
+              )}
+            </span>
+            <span className="hex-ascii">
+              {line.ascii.map((char, idx) => {
+                const globalOffset = line.offset + idx;
+                const byte = line.bytes[idx];
+                const highlightClass = byte !== null ? getByteHighlight(globalOffset) : '';
+                const asciiClass = highlightClass.replace('hex-', 'ascii-');
+                return <span key={idx} className={asciiClass}>{char}</span>;
+              })}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 interface BoxNodeListProps {
   nodes: Mp4BoxNode[];
   expandedNodes: Set<string>;
@@ -466,6 +1084,7 @@ interface BoxNodeListProps {
   descriptionMode: DescriptionMode;
   onToggle: (path: string) => void;
   onSelect: (path: string | null) => void;
+  loadingPaths: Set<string>;
   parentPath: string;
 }
 
@@ -478,6 +1097,7 @@ function BoxNodeList({
   descriptionMode,
   onToggle,
   onSelect,
+  loadingPaths,
   parentPath,
 }: BoxNodeListProps) {
   return (
@@ -488,7 +1108,14 @@ function BoxNodeList({
         const isSelected = selectedNode === path;
         const isMatched = matchedPaths?.has(path);
         const isCurrentMatch = currentMatchPath === path;
-        const hasChildren = node.children && node.children.length > 0;
+        const knownChildCount = node.childrenCount;
+        const hasChildren = (node.children && node.children.length > 0)
+          || (knownChildCount !== undefined ? knownChildCount > 0 : !!node.isContainer);
+        const isLoading = loadingPaths.has(path);
+        const childrenLoaded = node.children !== undefined;
+        const hasLoadedChildren = node.children && node.children.length > 0;
+        const isKnownEmpty = knownChildCount === 0;
+        const showEmptyState = isKnownEmpty || (childrenLoaded && !hasLoadedChildren);
 
         return (
           <li key={path} className="box-node">
@@ -522,17 +1149,24 @@ function BoxNodeList({
             </div>
 
             {hasChildren && isExpanded && (
-              <BoxNodeList
-                nodes={node.children!}
-                expandedNodes={expandedNodes}
-                selectedNode={selectedNode}
-                matchedPaths={matchedPaths}
-                currentMatchPath={currentMatchPath}
-                descriptionMode={descriptionMode}
-                onToggle={onToggle}
-                onSelect={onSelect}
-                parentPath={path}
-              />
+              node.children && node.children.length > 0 ? (
+                <BoxNodeList
+                  nodes={node.children!}
+                  expandedNodes={expandedNodes}
+                  selectedNode={selectedNode}
+                  matchedPaths={matchedPaths}
+                  currentMatchPath={currentMatchPath}
+                  descriptionMode={descriptionMode}
+                  onToggle={onToggle}
+                  onSelect={onSelect}
+                  loadingPaths={loadingPaths}
+                  parentPath={path}
+                />
+              ) : (
+                <div className="box-node-loading">
+                  {isLoading ? '加载中...' : (showEmptyState ? '暂无子节点' : '等待加载...')}
+                </div>
+              )
             )}
           </li>
         );
@@ -546,14 +1180,26 @@ interface BoxDetailPanelProps {
   descriptionMode: DescriptionMode;
   selectedField: BoxField | null;
   onFieldSelect: (field: BoxField | null) => void;
+  streamingFieldState?: StreamingFieldState;
+  onLoadFieldGroup?: (groupIndex: number) => void;
 }
 
 /** 每组显示的最大条目数 */
 const ITEMS_PER_GROUP = 100;
 
-function BoxDetailPanel({ node, descriptionMode, selectedField, onFieldSelect }: BoxDetailPanelProps) {
+function BoxDetailPanel({
+  node,
+  descriptionMode,
+  selectedField,
+  onFieldSelect,
+  streamingFieldState,
+  onLoadFieldGroup
+}: BoxDetailPanelProps) {
   // 分组展开状态
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set([0])); // 默认展开第一组
+  useEffect(() => {
+    setExpandedGroups(new Set([0]));
+  }, [node.boxType, node.offset, node.size]);
 
   const handleFieldClick = (field: BoxField) => {
     // 只有有 offset 信息的字段才能高亮
@@ -573,10 +1219,38 @@ function BoxDetailPanel({ node, descriptionMode, selectedField, onFieldSelect }:
         next.delete(groupIndex);
       } else {
         next.add(groupIndex);
+        if (streamingFieldState && onLoadFieldGroup && !streamingFieldState.entryGroups.has(groupIndex)) {
+          onLoadFieldGroup(groupIndex);
+        }
       }
       return next;
     });
   };
+
+  useEffect(() => {
+    if (!streamingFieldState || !onLoadFieldGroup || !streamingFieldState.entryCount) return;
+    expandedGroups.forEach(groupIndex => {
+      if (!streamingFieldState.entryGroups.has(groupIndex)) {
+        onLoadFieldGroup(groupIndex);
+      }
+    });
+  }, [expandedGroups, onLoadFieldGroup, streamingFieldState]);
+
+  const headerFields = streamingFieldState?.headerFields ?? node.fields;
+
+  const streamingEntryGroups = useMemo(() => {
+    if (!streamingFieldState?.entryCount) return null;
+    const groups: { startIndex: number; endIndex: number; groupIndex: number }[] = [];
+    for (let i = 0; i < streamingFieldState.entryCount; i += ITEMS_PER_GROUP) {
+      const end = Math.min(i + ITEMS_PER_GROUP, streamingFieldState.entryCount);
+      groups.push({
+        startIndex: i,
+        endIndex: end - 1,
+        groupIndex: Math.floor(i / ITEMS_PER_GROUP),
+      });
+    }
+    return groups;
+  }, [streamingFieldState]);
 
   // 计算字段分组
   const fieldGroups = useMemo(() => {
@@ -594,7 +1268,7 @@ function BoxDetailPanel({ node, descriptionMode, selectedField, onFieldSelect }:
       });
     }
     return groups;
-  }, [node.fields]);
+  }, [node.fields, streamingFieldState]);
 
   // 渲染字段表格
   const renderFieldsTable = (fields: BoxField[], keyPrefix: string = '') => (
@@ -665,15 +1339,15 @@ function BoxDetailPanel({ node, descriptionMode, selectedField, onFieldSelect }:
         </div>
       </div>
 
-      {node.fields && node.fields.length > 0 && (
+      {!streamingFieldState && node.fields && node.fields.length > 0 && (
         <div className="box-detail-fields">
           <h5>
-            📋 字段详情 ({node.fields.length} 项)
+            字段详情 ({node.fields.length} 条)
             <span className="field-hint">(点击可高亮)</span>
           </h5>
 
           {fieldGroups ? (
-            // 分组显示
+            // 分??示
             <div className="field-groups">
               {fieldGroups.map((group, groupIndex) => {
                 const isExpanded = expandedGroups.has(groupIndex);
@@ -688,7 +1362,7 @@ function BoxDetailPanel({ node, descriptionMode, selectedField, onFieldSelect }:
                         [{group.startIndex} - {group.endIndex}]
                       </span>
                       <span className="group-count">
-                        ({group.fields.length} 项)
+                        ({group.fields.length} 条)
                       </span>
                     </div>
                     {isExpanded && (
@@ -701,10 +1375,78 @@ function BoxDetailPanel({ node, descriptionMode, selectedField, onFieldSelect }:
               })}
             </div>
           ) : (
-            // 不需要分组，直接显示
+            // 不需要分?，直接?示
             renderFieldsTable(node.fields)
           )}
         </div>
+      )}
+
+      {streamingFieldState && (
+        <>
+          {streamingFieldState.isLoading && headerFields && headerFields.length === 0 && (
+            <div className="box-detail-fields">
+              <div className="field-loading">字段加载中...</div>
+            </div>
+          )}
+          {headerFields && headerFields.length > 0 && (
+            <div className="box-detail-fields">
+              <h5>
+                字段详情 ({headerFields.length} 条)
+                <span className="field-hint">(点击可高亮)</span>
+              </h5>
+              {renderFieldsTable(headerFields)}
+            </div>
+          )}
+          {streamingEntryGroups && streamingEntryGroups.length > 0 && (
+            <div className="box-detail-fields">
+              <h5>
+                数组条目 ({streamingFieldState.entryCount} 条)
+                <span className="field-hint">(分组加载)</span>
+              </h5>
+              <div className="field-groups">
+                {streamingEntryGroups.map(group => {
+                  const isExpanded = expandedGroups.has(group.groupIndex);
+                  const groupFields = streamingFieldState.entryGroups.get(group.groupIndex) ?? [];
+                  const isLoadingGroup = streamingFieldState.loadingGroups.has(group.groupIndex);
+                  return (
+                    <div key={group.groupIndex} className="field-group">
+                      <div
+                        className="field-group-header"
+                        onClick={() => toggleGroup(group.groupIndex)}
+                      >
+                        <span className="group-toggle">{isExpanded ? '▼' : '▶'}</span>
+                        <span className="group-range">
+                          [{group.startIndex} - {group.endIndex}]
+                        </span>
+                        <span className="group-count">
+                          ({group.endIndex - group.startIndex + 1} 条)
+                        </span>
+                      </div>
+                      {isExpanded && (
+                        <div className="field-group-content">
+                          {groupFields.length > 0
+                            ? renderFieldsTable(groupFields, `stream-${group.groupIndex}-`)
+                            : (
+                              <div className="field-group-empty">
+                                {isLoadingGroup ? '加载中...' : '暂无数据'}
+                              </div>
+                            )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {!streamingFieldState.isLoading
+            && (!headerFields || headerFields.length === 0)
+            && (!streamingEntryGroups || streamingEntryGroups.length === 0) && (
+              <div className="box-detail-fields">
+                <div className="field-group-empty">暂无可显示的字段信息</div>
+              </div>
+            )}
+        </>
       )}
 
       {node.children && node.children.length > 0 && (

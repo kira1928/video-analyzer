@@ -3,9 +3,15 @@
 //! 支持按需读取大文件，不需要将整个文件加载到内存
 
 use crate::container::{Codec, ContainerFormat};
+use crate::mp4_box::{
+    fourcc_to_string, get_box_description, is_container_box, is_sample_entry_box, is_stsd_box,
+    parse_box_fields, BoxField, Mp4BoxNode, Mp4BoxTree,
+};
 use crate::types::*;
+use async_recursion::async_recursion;
 use js_sys::{Function, Promise, Uint8Array};
 use wasm_bindgen::prelude::*;
+use std::io::Cursor;
 use wasm_bindgen_futures::JsFuture;
 
 /// Box 类型常量
@@ -80,6 +86,1190 @@ struct StscEntry {
     sample_desc_index: u32,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Mp4BoxChildrenResult {
+    children: Vec<Mp4BoxNode>,
+    total_count: usize,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Mp4BoxSearchResult {
+    tree: Mp4BoxTree,
+    match_paths: Vec<Vec<u32>>,
+    total_matches: usize,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Mp4BoxFieldsResult {
+    header_fields: Vec<BoxField>,
+    entry_count: Option<u32>,
+    entry_start: Option<u32>,
+    entries: Vec<BoxField>,
+}
+
+struct StreamingBoxHeader {
+    box_type_bytes: [u8; 4],
+    box_type: String,
+    size: u64,
+    header_size: u8,
+}
+
+fn empty_fields() -> Mp4BoxFieldsResult {
+    Mp4BoxFieldsResult {
+        header_fields: Vec::new(),
+        entry_count: None,
+        entry_start: None,
+        entries: Vec::new(),
+    }
+}
+
+fn clamp_range(entry_count: u32, start: u32, count: u32) -> (u32, u32) {
+    if entry_count == 0 {
+        return (0, 0);
+    }
+    let start = start.min(entry_count);
+    let max_count = entry_count.saturating_sub(start);
+    let count = if count == 0 { 0 } else { count.min(max_count) };
+    (start, count)
+}
+
+fn is_container_like(box_type: &[u8; 4]) -> bool {
+    is_container_box(box_type) || is_stsd_box(box_type) || is_sample_entry_box(box_type)
+}
+
+fn box_type_to_bytes(box_type: &str) -> [u8; 4] {
+    let mut out = [0u8; 4];
+    for (i, ch) in box_type.chars().take(4).enumerate() {
+        let code = ch as u32;
+        out[i] = if code <= 0xFF { code as u8 } else { b'?' };
+    }
+    out
+}
+
+#[wasm_bindgen]
+impl StreamingMp4Parser {
+    #[wasm_bindgen(js_name = getMp4BoxTreeRoot)]
+    pub async fn get_mp4_box_tree_root(&mut self, depth: u32) -> Result<JsValue, JsError> {
+        let depth = depth.max(1);
+        let (boxes, _count) = self
+            .parse_boxes_recursive(0, self.file_size, depth)
+            .await
+            .map_err(|e| JsError::new(&e))?;
+
+        let total_count = if let Some(total) = self.box_tree_total_count {
+            total
+        } else {
+            let total = self
+                .count_boxes_recursive(0, self.file_size)
+                .await
+                .map_err(|e| JsError::new(&e))?;
+            self.box_tree_total_count = Some(total);
+            total
+        };
+
+        let tree = Mp4BoxTree {
+            boxes,
+            total_count,
+        };
+
+        serde_wasm_bindgen::to_value(&tree).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    #[wasm_bindgen(js_name = getMp4BoxChildren)]
+    pub async fn get_mp4_box_children(
+        &self,
+        offset: f64,
+        size: f64,
+        box_type: String,
+    ) -> Result<JsValue, JsError> {
+        let offset = offset as u64;
+        let size = size as u64;
+        let box_type_bytes = box_type_to_bytes(&box_type);
+
+        if !is_container_like(&box_type_bytes) || size == 0 {
+            let empty = Mp4BoxChildrenResult {
+                children: Vec::new(),
+                total_count: 0,
+            };
+            return serde_wasm_bindgen::to_value(&empty)
+                .map_err(|e| JsError::new(&e.to_string()));
+        }
+
+        let header = self
+            .read_box_header(offset, offset + size)
+            .await
+            .map_err(|e| JsError::new(&e))?
+            .ok_or_else(|| JsError::new("无法读取 box header"))?;
+        let (content_start, content_end) =
+            self.child_content_range(offset, size, header.header_size, &box_type_bytes)?;
+        let (children, total_count) = self
+            .parse_boxes_recursive(content_start, content_end, 1)
+            .await
+            .map_err(|e| JsError::new(&e))?;
+
+        let result = Mp4BoxChildrenResult {
+            children,
+            total_count,
+        };
+        serde_wasm_bindgen::to_value(&result).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    #[wasm_bindgen(js_name = getMp4BoxFields)]
+    pub async fn get_mp4_box_fields(
+        &self,
+        offset: f64,
+        size: f64,
+        box_type: String,
+        start: u32,
+        count: u32,
+    ) -> Result<JsValue, JsError> {
+        let offset = offset as u64;
+        let size = size as u64;
+        let header = self
+            .read_box_header(offset, offset + size)
+            .await
+            .map_err(|e| JsError::new(&e))?
+            .ok_or_else(|| JsError::new("无法读取 box header"))?;
+
+        let content_start = offset + header.header_size as u64;
+        let content_size = size.saturating_sub(header.header_size as u64);
+
+        let result = self
+            .parse_box_fields_streaming(
+                &box_type,
+                content_start,
+                content_size,
+                start,
+                count,
+            )
+            .await
+            .map_err(|e| JsError::new(&e))?;
+
+        serde_wasm_bindgen::to_value(&result).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    #[wasm_bindgen(js_name = readMp4Bytes)]
+    pub async fn read_mp4_bytes(
+        &self,
+        offset: f64,
+        length: u32,
+    ) -> Result<Uint8Array, JsError> {
+        const MAX_READ_BYTES: usize = 256 * 1024;
+
+        let offset = offset as u64;
+        if offset >= self.file_size {
+            return Ok(Uint8Array::new_with_length(0));
+        }
+
+        let length = (length as usize).min(MAX_READ_BYTES);
+        let available = (self.file_size - offset) as usize;
+        let length = length.min(available);
+        if length == 0 {
+            return Ok(Uint8Array::new_with_length(0));
+        }
+
+        let data = self
+            .read_range(offset, length)
+            .await
+            .map_err(|e| JsError::new(&e))?;
+
+        Ok(Uint8Array::from(data.as_slice()))
+    }
+
+    #[wasm_bindgen(js_name = searchMp4Boxes)]
+    pub async fn search_mp4_boxes(&self, query: String) -> Result<JsValue, JsError> {
+        let query = query.trim().to_string();
+        if query.is_empty() {
+            let empty = Mp4BoxSearchResult {
+                tree: Mp4BoxTree {
+                    boxes: Vec::new(),
+                    total_count: 0,
+                },
+                match_paths: Vec::new(),
+                total_matches: 0,
+            };
+            return serde_wasm_bindgen::to_value(&empty)
+                .map_err(|e| JsError::new(&e.to_string()));
+        }
+
+        let (boxes, match_paths, total_matches) = self
+            .search_boxes_recursive(0, self.file_size, &query, &[])
+            .await
+            .map_err(|e| JsError::new(&e))?;
+
+        let tree = Mp4BoxTree {
+            boxes,
+            total_count: total_matches,
+        };
+        let result = Mp4BoxSearchResult {
+            tree,
+            match_paths,
+            total_matches,
+        };
+        serde_wasm_bindgen::to_value(&result).map_err(|e| JsError::new(&e.to_string()))
+    }
+}
+
+impl StreamingMp4Parser {
+    async fn read_box_header(
+        &self,
+        offset: u64,
+        end: u64,
+    ) -> Result<Option<StreamingBoxHeader>, String> {
+        if offset + 8 > end {
+            return Ok(None);
+        }
+        let header = self.read_range(offset, 8).await?;
+        if header.len() < 8 {
+            return Ok(None);
+        }
+
+        let size = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as u64;
+        let box_type_bytes: [u8; 4] = [header[4], header[5], header[6], header[7]];
+        let box_type = fourcc_to_string(box_type_bytes);
+
+        let (box_size, header_size) = if size == 1 {
+            let ext = self.read_range(offset + 8, 8).await?;
+            if ext.len() < 8 {
+                return Ok(None);
+            }
+            (
+                u64::from_be_bytes([
+                    ext[0], ext[1], ext[2], ext[3], ext[4], ext[5], ext[6], ext[7],
+                ]),
+                16u8,
+            )
+        } else if size == 0 {
+            (end.saturating_sub(offset), 8u8)
+        } else {
+            (size, 8u8)
+        };
+
+        if box_size < header_size as u64 || offset + box_size > end + 8 {
+            return Ok(None);
+        }
+
+        Ok(Some(StreamingBoxHeader {
+            box_type_bytes,
+            box_type,
+            size: box_size,
+            header_size,
+        }))
+    }
+
+    fn child_content_range(
+        &self,
+        offset: u64,
+        size: u64,
+        header_size: u8,
+        box_type: &[u8; 4],
+    ) -> Result<(u64, u64), JsError> {
+        let content_start = offset + header_size as u64;
+        let content_end = offset + size;
+
+        let child_start = if is_stsd_box(box_type) {
+            content_start + 8
+        } else if is_sample_entry_box(box_type) {
+            content_start + 78
+        } else if box_type == b"meta" {
+            content_start + 4
+        } else {
+            content_start
+        };
+
+        if child_start > content_end {
+            return Err(JsError::new("无效的 box 子范围"));
+        }
+
+        Ok((child_start, content_end))
+    }
+
+    #[async_recursion(?Send)]
+    async fn parse_boxes_recursive(
+        &self,
+        start: u64,
+        end: u64,
+        depth: u32,
+    ) -> Result<(Vec<Mp4BoxNode>, usize), String> {
+        let mut boxes = Vec::new();
+        let mut total_count = 0usize;
+        let mut pos = start;
+
+        while pos < end {
+            let header = match self.read_box_header(pos, end).await? {
+                Some(h) => h,
+                None => break,
+            };
+
+            let box_end = pos + header.size;
+            let description = get_box_description(&header.box_type).to_string();
+            let is_container = is_container_like(&header.box_type_bytes);
+
+            let mut children = None;
+            if depth > 1 && is_container {
+                let (child_start, child_end) =
+                    self.child_content_range(pos, header.size, header.header_size, &header.box_type_bytes)
+                        .map_err(|e| format!("{:?}", e))?;
+                if child_start < child_end {
+                    let (child_boxes, child_count) =
+                        self.parse_boxes_recursive(child_start, child_end, depth - 1).await?;
+                    total_count += child_count;
+                    children = Some(child_boxes);
+                }
+            }
+
+            let children_count = children.as_ref().map(|list| list.len());
+            let node = Mp4BoxNode {
+                box_type: header.box_type,
+                offset: pos,
+                size: header.size,
+                header_size: header.header_size,
+                description,
+                fields: None,
+                children,
+                children_count,
+                is_container: Some(is_container),
+            };
+
+            boxes.push(node);
+            total_count += 1;
+            pos = box_end;
+        }
+
+        Ok((boxes, total_count))
+    }
+
+    #[async_recursion(?Send)]
+    async fn count_boxes_recursive(&self, start: u64, end: u64) -> Result<usize, String> {
+        let mut total = 0usize;
+        let mut pos = start;
+
+        while pos < end {
+            let header = match self.read_box_header(pos, end).await? {
+                Some(h) => h,
+                None => break,
+            };
+
+            let box_end = pos + header.size;
+            total += 1;
+
+            if is_container_like(&header.box_type_bytes) {
+                if let Ok((child_start, child_end)) =
+                    self.child_content_range(pos, header.size, header.header_size, &header.box_type_bytes)
+                {
+                    if child_start < child_end {
+                        total += self.count_boxes_recursive(child_start, child_end).await?;
+                    }
+                }
+            }
+
+            pos = box_end;
+        }
+
+        Ok(total)
+    }
+}
+
+impl StreamingMp4Parser {
+    #[async_recursion(?Send)]
+    async fn search_boxes_recursive(
+        &self,
+        start: u64,
+        end: u64,
+        query: &str,
+        path_prefix: &[u32],
+    ) -> Result<(Vec<Mp4BoxNode>, Vec<Vec<u32>>, usize), String> {
+        let mut boxes = Vec::new();
+        let mut match_paths: Vec<Vec<u32>> = Vec::new();
+        let mut total_matches = 0usize;
+        let mut pos = start;
+        let q = query.to_lowercase();
+
+        while pos < end {
+            let header = match self.read_box_header(pos, end).await? {
+                Some(h) => h,
+                None => break,
+            };
+
+            let box_end = pos + header.size;
+            let description = get_box_description(&header.box_type).to_string();
+            let is_container = is_container_like(&header.box_type_bytes);
+
+            let mut child_nodes = Vec::new();
+            let mut child_paths = Vec::new();
+
+            if is_container {
+                if let Ok((child_start, child_end)) =
+                    self.child_content_range(pos, header.size, header.header_size, &header.box_type_bytes)
+                {
+                    let (nodes, paths, matches) = self
+                        .search_boxes_recursive(child_start, child_end, query, &[])
+                        .await?;
+                    child_nodes = nodes;
+                    child_paths = paths;
+                    total_matches += matches;
+                }
+            }
+
+            let is_match = header.box_type.to_lowercase().contains(&q)
+                || description.to_lowercase().contains(&q)
+                || pos.to_string().contains(&q)
+                || header.size.to_string().contains(&q);
+
+            if is_match || !child_nodes.is_empty() {
+                let idx = boxes.len() as u32;
+
+                if is_match {
+                    let mut path = path_prefix.to_vec();
+                    path.push(idx);
+                    match_paths.push(path);
+                    total_matches += 1;
+                }
+
+                for child_path in child_paths {
+                    let mut path = path_prefix.to_vec();
+                    path.push(idx);
+                    path.extend(child_path);
+                    match_paths.push(path);
+                }
+
+                let has_children = !child_nodes.is_empty();
+                let children_count = if has_children {
+                    Some(child_nodes.len())
+                } else {
+                    None
+                };
+                let children = if has_children {
+                    Some(child_nodes)
+                } else {
+                    None
+                };
+
+                let node = Mp4BoxNode {
+                    box_type: header.box_type,
+                    offset: pos,
+                    size: header.size,
+                    header_size: header.header_size,
+                    description,
+                    fields: None,
+                    children,
+                    children_count,
+                    is_container: Some(is_container),
+                };
+
+                boxes.push(node);
+            }
+
+            pos = box_end;
+        }
+
+        Ok((boxes, match_paths, total_matches))
+    }
+}
+
+impl StreamingMp4Parser {
+    async fn parse_box_fields_streaming(
+        &self,
+        box_type: &str,
+        content_start: u64,
+        content_size: u64,
+        start: u32,
+        count: u32,
+    ) -> Result<Mp4BoxFieldsResult, String> {
+        const MAX_FIELD_PAYLOAD_BYTES: usize = 256 * 1024;
+
+        match box_type {
+            "stts" => self
+                .parse_entries_stts(content_start, start, count)
+                .await,
+            "stsc" => self
+                .parse_entries_stsc(content_start, start, count)
+                .await,
+            "stsz" => self
+                .parse_entries_stsz(content_start, start, count)
+                .await,
+            "stco" => self
+                .parse_entries_stco(content_start, start, count, false)
+                .await,
+            "co64" => self
+                .parse_entries_stco(content_start, start, count, true)
+                .await,
+            "stss" => self
+                .parse_entries_stss(content_start, start, count)
+                .await,
+            "ctts" => self
+                .parse_entries_ctts(content_start, start, count)
+                .await,
+            "elst" => self
+                .parse_entries_elst(content_start, start, count)
+                .await,
+            "mdat" => Ok(Mp4BoxFieldsResult {
+                header_fields: vec![BoxField::new(
+                    "data_size",
+                    format!(
+                        "{} bytes ({:.2} MB)",
+                        content_size,
+                        content_size as f64 / 1024.0 / 1024.0
+                    ),
+                    "媒体数据大小",
+                )],
+                entry_count: None,
+                entry_start: None,
+                entries: Vec::new(),
+            }),
+            _ => {
+                if content_size as usize > MAX_FIELD_PAYLOAD_BYTES {
+                    return Ok(empty_fields());
+                }
+                let payload = self.read_range(content_start, content_size as usize).await?;
+                let mut cursor = Cursor::new(payload);
+                let fields = parse_box_fields(&mut cursor, box_type, 0, content_size)
+                    .unwrap_or_default();
+                Ok(Mp4BoxFieldsResult {
+                    header_fields: fields,
+                    entry_count: None,
+                    entry_start: None,
+                    entries: Vec::new(),
+                })
+            }
+        }
+    }
+
+    async fn parse_entries_stts(
+        &self,
+        content_start: u64,
+        start: u32,
+        count: u32,
+    ) -> Result<Mp4BoxFieldsResult, String> {
+        let header = self.read_range(content_start, 8).await?;
+        if header.len() < 8 {
+            return Ok(empty_fields());
+        }
+        let version = header[0];
+        let entry_count =
+            u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let mut header_fields = Vec::new();
+        header_fields.push(BoxField::new("version", version, "版本号"));
+        header_fields.push(BoxField::new(
+            "entry_count",
+            entry_count,
+            "条目数量，每条描述一组具有相同时长的采样",
+        ));
+
+        let (entries, entry_start) =
+            self.read_stts_entries(content_start + 8, entry_count, start, count)
+                .await?;
+
+        Ok(Mp4BoxFieldsResult {
+            header_fields,
+            entry_count: Some(entry_count),
+            entry_start,
+            entries,
+        })
+    }
+
+    async fn read_stts_entries(
+        &self,
+        entries_start: u64,
+        entry_count: u32,
+        start: u32,
+        count: u32,
+    ) -> Result<(Vec<BoxField>, Option<u32>), String> {
+        let (start, count) = clamp_range(entry_count, start, count);
+        if count == 0 {
+            return Ok((Vec::new(), None));
+        }
+        let byte_start = entries_start + start as u64 * 8;
+        let bytes = self.read_range(byte_start, count as usize * 8).await?;
+        let mut fields = Vec::new();
+        for i in 0..count as usize {
+            let base = i * 8;
+            if base + 8 > bytes.len() {
+                break;
+            }
+            let sample_count = u32::from_be_bytes([
+                bytes[base],
+                bytes[base + 1],
+                bytes[base + 2],
+                bytes[base + 3],
+            ]);
+            let sample_delta = u32::from_be_bytes([
+                bytes[base + 4],
+                bytes[base + 5],
+                bytes[base + 6],
+                bytes[base + 7],
+            ]);
+            let idx = start as usize + i;
+            fields.push(BoxField::new(
+                &format!("entry[{}]", idx),
+                format!("count={}, delta={}", sample_count, sample_delta),
+                &format!(
+                    "第 {} 条：{} 个采样，每个持续 {} timescale 单位",
+                    idx + 1,
+                    sample_count,
+                    sample_delta
+                ),
+            ));
+        }
+        Ok((fields, Some(start)))
+    }
+
+    async fn parse_entries_stsc(
+        &self,
+        content_start: u64,
+        start: u32,
+        count: u32,
+    ) -> Result<Mp4BoxFieldsResult, String> {
+        let header = self.read_range(content_start, 8).await?;
+        if header.len() < 8 {
+            return Ok(empty_fields());
+        }
+        let version = header[0];
+        let entry_count =
+            u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let mut header_fields = Vec::new();
+        header_fields.push(BoxField::new("version", version, "版本号"));
+        header_fields.push(BoxField::new(
+            "entry_count",
+            entry_count,
+            "条目数量，定义 Sample 在 Chunk 中的分布规律",
+        ));
+
+        let (entries, entry_start) =
+            self.read_stsc_entries(content_start + 8, entry_count, start, count)
+                .await?;
+
+        Ok(Mp4BoxFieldsResult {
+            header_fields,
+            entry_count: Some(entry_count),
+            entry_start,
+            entries,
+        })
+    }
+
+    async fn read_stsc_entries(
+        &self,
+        entries_start: u64,
+        entry_count: u32,
+        start: u32,
+        count: u32,
+    ) -> Result<(Vec<BoxField>, Option<u32>), String> {
+        let (start, count) = clamp_range(entry_count, start, count);
+        if count == 0 {
+            return Ok((Vec::new(), None));
+        }
+        let byte_start = entries_start + start as u64 * 12;
+        let bytes = self.read_range(byte_start, count as usize * 12).await?;
+        let mut fields = Vec::new();
+        for i in 0..count as usize {
+            let base = i * 12;
+            if base + 12 > bytes.len() {
+                break;
+            }
+            let first_chunk = u32::from_be_bytes([
+                bytes[base],
+                bytes[base + 1],
+                bytes[base + 2],
+                bytes[base + 3],
+            ]);
+            let samples_per_chunk = u32::from_be_bytes([
+                bytes[base + 4],
+                bytes[base + 5],
+                bytes[base + 6],
+                bytes[base + 7],
+            ]);
+            let sample_desc_idx = u32::from_be_bytes([
+                bytes[base + 8],
+                bytes[base + 9],
+                bytes[base + 10],
+                bytes[base + 11],
+            ]);
+            let idx = start as usize + i;
+            fields.push(BoxField::new(
+                &format!("entry[{}]", idx),
+                format!(
+                    "first_chunk={}, samples_per_chunk={}, desc_idx={}",
+                    first_chunk, samples_per_chunk, sample_desc_idx
+                ),
+                &format!(
+                    "第 {} 条：从第 {} 个 Chunk 开始，每个 Chunk 包含 {} 个采样",
+                    idx + 1,
+                    first_chunk,
+                    samples_per_chunk
+                ),
+            ));
+        }
+        Ok((fields, Some(start)))
+    }
+
+    async fn parse_entries_stsz(
+        &self,
+        content_start: u64,
+        start: u32,
+        count: u32,
+    ) -> Result<Mp4BoxFieldsResult, String> {
+        let header = self.read_range(content_start, 12).await?;
+        if header.len() < 12 {
+            return Ok(empty_fields());
+        }
+        let version = header[0];
+        let sample_size =
+            u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let sample_count =
+            u32::from_be_bytes([header[8], header[9], header[10], header[11]]);
+
+        let mut header_fields = Vec::new();
+        header_fields.push(BoxField::new("version", version, "版本号"));
+        if sample_size > 0 {
+            header_fields.push(BoxField::new(
+                "sample_size",
+                format!("{} bytes", sample_size),
+                "固定采样大小（所有采样大小相同）",
+            ));
+        } else {
+            header_fields.push(BoxField::new(
+                "sample_size",
+                "0 (variable)",
+                "可变大小，每个采样大小单独指定",
+            ));
+        }
+        header_fields.push(BoxField::new("sample_count", sample_count, "采样总数"));
+
+        if sample_size > 0 {
+            return Ok(Mp4BoxFieldsResult {
+                header_fields,
+                entry_count: None,
+                entry_start: None,
+                entries: Vec::new(),
+            });
+        }
+
+        let (entries, entry_start) =
+            self.read_stsz_entries(content_start + 12, sample_count, start, count)
+                .await?;
+
+        Ok(Mp4BoxFieldsResult {
+            header_fields,
+            entry_count: Some(sample_count),
+            entry_start,
+            entries,
+        })
+    }
+
+    async fn read_stsz_entries(
+        &self,
+        entries_start: u64,
+        entry_count: u32,
+        start: u32,
+        count: u32,
+    ) -> Result<(Vec<BoxField>, Option<u32>), String> {
+        let (start, count) = clamp_range(entry_count, start, count);
+        if count == 0 {
+            return Ok((Vec::new(), None));
+        }
+        let byte_start = entries_start + start as u64 * 4;
+        let bytes = self.read_range(byte_start, count as usize * 4).await?;
+        let mut fields = Vec::new();
+        for i in 0..count as usize {
+            let base = i * 4;
+            if base + 4 > bytes.len() {
+                break;
+            }
+            let size = u32::from_be_bytes([
+                bytes[base],
+                bytes[base + 1],
+                bytes[base + 2],
+                bytes[base + 3],
+            ]);
+            let idx = start as usize + i;
+            fields.push(BoxField::new(
+                &format!("entry[{}]", idx),
+                size,
+                &format!("第 {} 个采样大小", idx + 1),
+            ));
+        }
+        Ok((fields, Some(start)))
+    }
+
+    async fn parse_entries_stco(
+        &self,
+        content_start: u64,
+        start: u32,
+        count: u32,
+        is_64bit: bool,
+    ) -> Result<Mp4BoxFieldsResult, String> {
+        let header = self.read_range(content_start, 8).await?;
+        if header.len() < 8 {
+            return Ok(empty_fields());
+        }
+        let version = header[0];
+        let entry_count =
+            u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let mut header_fields = Vec::new();
+        header_fields.push(BoxField::new("version", version, "版本号"));
+        header_fields.push(BoxField::new("entry_count", entry_count, "Chunk 数量"));
+        header_fields.push(BoxField::new(
+            "offset_size",
+            if is_64bit { "64-bit" } else { "32-bit" },
+            if is_64bit {
+                "使用 64 位偏移量（大文件支持）"
+            } else {
+                "使用 32 位偏移量"
+            },
+        ));
+
+        let (entries, entry_start) = self
+            .read_stco_entries(content_start + 8, entry_count, start, count, is_64bit)
+            .await?;
+
+        Ok(Mp4BoxFieldsResult {
+            header_fields,
+            entry_count: Some(entry_count),
+            entry_start,
+            entries,
+        })
+    }
+
+    async fn read_stco_entries(
+        &self,
+        entries_start: u64,
+        entry_count: u32,
+        start: u32,
+        count: u32,
+        is_64bit: bool,
+    ) -> Result<(Vec<BoxField>, Option<u32>), String> {
+        let (start, count) = clamp_range(entry_count, start, count);
+        if count == 0 {
+            return Ok((Vec::new(), None));
+        }
+        let entry_size = if is_64bit { 8 } else { 4 };
+        let byte_start = entries_start + start as u64 * entry_size;
+        let bytes = self
+            .read_range(byte_start, count as usize * entry_size as usize)
+            .await?;
+        let mut fields = Vec::new();
+        for i in 0..count as usize {
+            let base = i * entry_size as usize;
+            if base + entry_size as usize > bytes.len() {
+                break;
+            }
+            let offset = if is_64bit {
+                u64::from_be_bytes([
+                    bytes[base],
+                    bytes[base + 1],
+                    bytes[base + 2],
+                    bytes[base + 3],
+                    bytes[base + 4],
+                    bytes[base + 5],
+                    bytes[base + 6],
+                    bytes[base + 7],
+                ])
+            } else {
+                u32::from_be_bytes([
+                    bytes[base],
+                    bytes[base + 1],
+                    bytes[base + 2],
+                    bytes[base + 3],
+                ]) as u64
+            };
+            let idx = start as usize + i;
+            fields.push(BoxField::new(
+                &format!("entry[{}]", idx),
+                format!("0x{:X}", offset),
+                &format!("第 {} 个 Chunk 偏移", idx + 1),
+            ));
+        }
+        Ok((fields, Some(start)))
+    }
+
+    async fn parse_entries_stss(
+        &self,
+        content_start: u64,
+        start: u32,
+        count: u32,
+    ) -> Result<Mp4BoxFieldsResult, String> {
+        let header = self.read_range(content_start, 8).await?;
+        if header.len() < 8 {
+            return Ok(empty_fields());
+        }
+        let version = header[0];
+        let entry_count =
+            u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let mut header_fields = Vec::new();
+        header_fields.push(BoxField::new("version", version, "版本号"));
+        header_fields.push(BoxField::new(
+            "entry_count",
+            entry_count,
+            "同步采样（关键帧）数量",
+        ));
+
+        let (entries, entry_start) =
+            self.read_stss_entries(content_start + 8, entry_count, start, count)
+                .await?;
+
+        Ok(Mp4BoxFieldsResult {
+            header_fields,
+            entry_count: Some(entry_count),
+            entry_start,
+            entries,
+        })
+    }
+
+    async fn read_stss_entries(
+        &self,
+        entries_start: u64,
+        entry_count: u32,
+        start: u32,
+        count: u32,
+    ) -> Result<(Vec<BoxField>, Option<u32>), String> {
+        let (start, count) = clamp_range(entry_count, start, count);
+        if count == 0 {
+            return Ok((Vec::new(), None));
+        }
+        let byte_start = entries_start + start as u64 * 4;
+        let bytes = self.read_range(byte_start, count as usize * 4).await?;
+        let mut fields = Vec::new();
+        for i in 0..count as usize {
+            let base = i * 4;
+            if base + 4 > bytes.len() {
+                break;
+            }
+            let sample_num = u32::from_be_bytes([
+                bytes[base],
+                bytes[base + 1],
+                bytes[base + 2],
+                bytes[base + 3],
+            ]);
+            let idx = start as usize + i;
+            fields.push(BoxField::new(
+                &format!("entry[{}]", idx),
+                sample_num,
+                &format!("第 {} 个关键帧采样编号", idx + 1),
+            ));
+        }
+        Ok((fields, Some(start)))
+    }
+
+    async fn parse_entries_ctts(
+        &self,
+        content_start: u64,
+        start: u32,
+        count: u32,
+    ) -> Result<Mp4BoxFieldsResult, String> {
+        let header = self.read_range(content_start, 8).await?;
+        if header.len() < 8 {
+            return Ok(empty_fields());
+        }
+        let version = header[0];
+        let entry_count =
+            u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let mut header_fields = Vec::new();
+        header_fields.push(BoxField::new(
+            "version",
+            version,
+            if version == 0 {
+                "版本 0：offset 为无符号数"
+            } else {
+                "版本 1：offset 可为负数"
+            },
+        ));
+        header_fields.push(BoxField::new(
+            "entry_count",
+            entry_count,
+            "条目数量，每条描述一组 CTS 偏移",
+        ));
+
+        let (entries, entry_start) =
+            self.read_ctts_entries(content_start + 8, entry_count, start, count, version)
+                .await?;
+
+        Ok(Mp4BoxFieldsResult {
+            header_fields,
+            entry_count: Some(entry_count),
+            entry_start,
+            entries,
+        })
+    }
+
+    async fn read_ctts_entries(
+        &self,
+        entries_start: u64,
+        entry_count: u32,
+        start: u32,
+        count: u32,
+        version: u8,
+    ) -> Result<(Vec<BoxField>, Option<u32>), String> {
+        let (start, count) = clamp_range(entry_count, start, count);
+        if count == 0 {
+            return Ok((Vec::new(), None));
+        }
+        let byte_start = entries_start + start as u64 * 8;
+        let bytes = self.read_range(byte_start, count as usize * 8).await?;
+        let mut fields = Vec::new();
+        for i in 0..count as usize {
+            let base = i * 8;
+            if base + 8 > bytes.len() {
+                break;
+            }
+            let sample_count = u32::from_be_bytes([
+                bytes[base],
+                bytes[base + 1],
+                bytes[base + 2],
+                bytes[base + 3],
+            ]);
+            let offset = if version == 0 {
+                u32::from_be_bytes([
+                    bytes[base + 4],
+                    bytes[base + 5],
+                    bytes[base + 6],
+                    bytes[base + 7],
+                ]) as i64
+            } else {
+                i32::from_be_bytes([
+                    bytes[base + 4],
+                    bytes[base + 5],
+                    bytes[base + 6],
+                    bytes[base + 7],
+                ]) as i64
+            };
+            let idx = start as usize + i;
+            fields.push(BoxField::new(
+                &format!("entry[{}]", idx),
+                format!("count={}, offset={}", sample_count, offset),
+                &format!("第 {} 条：{} 个采样，CTS = DTS + {}", idx + 1, sample_count, offset),
+            ));
+        }
+        Ok((fields, Some(start)))
+    }
+
+    async fn parse_entries_elst(
+        &self,
+        content_start: u64,
+        start: u32,
+        count: u32,
+    ) -> Result<Mp4BoxFieldsResult, String> {
+        let header = self.read_range(content_start, 8).await?;
+        if header.len() < 8 {
+            return Ok(empty_fields());
+        }
+        let version = header[0];
+        let entry_count =
+            u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let mut header_fields = Vec::new();
+        header_fields.push(BoxField::new("version", version, "版本号，影响字段大小"));
+        header_fields.push(BoxField::new(
+            "entry_count",
+            entry_count,
+            "编辑列表条目数量",
+        ));
+
+        let (entries, entry_start) = self
+            .read_elst_entries(content_start + 8, entry_count, start, count, version)
+            .await?;
+
+        Ok(Mp4BoxFieldsResult {
+            header_fields,
+            entry_count: Some(entry_count),
+            entry_start,
+            entries,
+        })
+    }
+
+    async fn read_elst_entries(
+        &self,
+        entries_start: u64,
+        entry_count: u32,
+        start: u32,
+        count: u32,
+        version: u8,
+    ) -> Result<(Vec<BoxField>, Option<u32>), String> {
+        let (start, count) = clamp_range(entry_count, start, count);
+        if count == 0 {
+            return Ok((Vec::new(), None));
+        }
+        let entry_size = if version == 1 { 20 } else { 12 };
+        let byte_start = entries_start + start as u64 * entry_size;
+        let bytes = self.read_range(byte_start, count as usize * entry_size as usize).await?;
+        let mut fields = Vec::new();
+        for i in 0..count as usize {
+            let base = i * entry_size as usize;
+            if base + entry_size as usize > bytes.len() {
+                break;
+            }
+            let (segment_duration, media_time, rate) = if version == 1 {
+                let duration = u64::from_be_bytes([
+                    bytes[base],
+                    bytes[base + 1],
+                    bytes[base + 2],
+                    bytes[base + 3],
+                    bytes[base + 4],
+                    bytes[base + 5],
+                    bytes[base + 6],
+                    bytes[base + 7],
+                ]);
+                let time = i64::from_be_bytes([
+                    bytes[base + 8],
+                    bytes[base + 9],
+                    bytes[base + 10],
+                    bytes[base + 11],
+                    bytes[base + 12],
+                    bytes[base + 13],
+                    bytes[base + 14],
+                    bytes[base + 15],
+                ]);
+                let rate_raw = u32::from_be_bytes([
+                    bytes[base + 16],
+                    bytes[base + 17],
+                    bytes[base + 18],
+                    bytes[base + 19],
+                ]);
+                (duration, time, rate_raw as f64 / 65536.0)
+            } else {
+                let duration = u32::from_be_bytes([
+                    bytes[base],
+                    bytes[base + 1],
+                    bytes[base + 2],
+                    bytes[base + 3],
+                ]) as u64;
+                let time = i32::from_be_bytes([
+                    bytes[base + 4],
+                    bytes[base + 5],
+                    bytes[base + 6],
+                    bytes[base + 7],
+                ]) as i64;
+                let rate_raw = u32::from_be_bytes([
+                    bytes[base + 8],
+                    bytes[base + 9],
+                    bytes[base + 10],
+                    bytes[base + 11],
+                ]);
+                (duration, time, rate_raw as f64 / 65536.0)
+            };
+            let idx = start as usize + i;
+            let desc = if media_time == -1 {
+                format!("空白段：时长 {}", segment_duration)
+            } else {
+                format!(
+                    "媒体段：时长 {}，起点 {}，速率 {:.2}x",
+                    segment_duration, media_time, rate
+                )
+            };
+            fields.push(BoxField::new(
+                &format!("entry[{}]", idx),
+                format!(
+                    "duration={}, media_time={}, rate={:.2}",
+                    segment_duration, media_time, rate
+                ),
+                &desc,
+            ));
+        }
+        Ok((fields, Some(start)))
+    }
+}
+
 /// 轨道信息
 #[derive(Debug, Clone)]
 struct StreamingTrack {
@@ -135,6 +1325,7 @@ pub struct StreamingMp4Parser {
     // 初始化数据（avcC/hvcC）
     video_init_data: Option<Vec<u8>>,
     audio_init_data: Option<Vec<u8>>,
+    box_tree_total_count: Option<usize>,
 }
 
 #[wasm_bindgen]
@@ -159,6 +1350,7 @@ impl StreamingMp4Parser {
             moov_size: 0,
             video_init_data: None,
             audio_init_data: None,
+            box_tree_total_count: None,
         }
     }
 
@@ -495,39 +1687,70 @@ impl StreamingMp4Parser {
             return Ok(());
         }
 
-        // 跳过 version + flags + entry_count
-        let entry_type: [u8; 4] = [data[12], data[13], data[14], data[15]];
-        let codec = Codec::from(&entry_type);
+        let entry_count = u32::from_be_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let mut pos = 8usize;
 
-        if let Some(track) = self.tracks.last_mut() {
-            track.codec = codec.clone();
-
-            // 对于视频，解析宽高
-            if matches!(codec, Codec::H264 | Codec::H265) && data.len() >= 40 {
-                track.width = Some(u16::from_be_bytes([data[32], data[33]]) as u32);
-                track.height = Some(u16::from_be_bytes([data[34], data[35]]) as u32);
-
-                self.has_video = true;
-                self.video_codec = Some(codec.clone());
-                self.width = track.width;
-                self.height = track.height;
+        for entry_index in 0..entry_count {
+            if pos + 8 > data.len() {
+                break;
+            }
+            let entry_size =
+                u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+            if entry_size < 8 || pos + entry_size > data.len() {
+                break;
             }
 
-            if matches!(track.codec, Codec::Aac) {
-                self.has_audio = true;
-                self.audio_codec = Some(track.codec.clone());
-            }
-        }
+            let entry_type: [u8; 4] =
+                [data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]];
+            let codec = Codec::from(&entry_type);
 
-        if matches!(codec, Codec::H264 | Codec::H265) && self.video_init_data.is_none() {
-            let target = if matches!(codec, Codec::H265) {
-                BOX_HVCC
-            } else {
-                BOX_AVCC
-            };
-            if let Some(config) = Self::extract_box_payload(data, target) {
-                self.video_init_data = Some(config);
+            if entry_index == 0 {
+                if let Some(track) = self.tracks.last_mut() {
+                    track.codec = codec.clone();
+
+                    // 视频条目: 解析宽高
+                    if matches!(codec, Codec::H264 | Codec::H265) && entry_size >= 36 {
+                        track.width = Some(
+                            u16::from_be_bytes([data[pos + 32], data[pos + 33]]) as u32,
+                        );
+                        track.height = Some(
+                            u16::from_be_bytes([data[pos + 34], data[pos + 35]]) as u32,
+                        );
+
+                        self.has_video = true;
+                        self.video_codec = Some(codec.clone());
+                        self.width = track.width;
+                        self.height = track.height;
+                    }
+
+                    if matches!(track.codec, Codec::Aac) {
+                        self.has_audio = true;
+                        self.audio_codec = Some(track.codec.clone());
+                    }
+                }
             }
+
+            if matches!(codec, Codec::H264 | Codec::H265) && self.video_init_data.is_none() {
+                let target = if matches!(codec, Codec::H265) {
+                    BOX_HVCC
+                } else {
+                    BOX_AVCC
+                };
+
+                let entry_payload = &data[pos + 8..pos + entry_size];
+                let mut config = None;
+                if entry_payload.len() > 78 {
+                    config = Self::extract_box_payload(&entry_payload[78..], target);
+                }
+                if config.is_none() {
+                    config = Self::extract_box_payload(entry_payload, target);
+                }
+                if let Some(config) = config {
+                    self.video_init_data = Some(config);
+                }
+            }
+
+            pos += entry_size;
         }
 
         Ok(())

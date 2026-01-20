@@ -167,6 +167,8 @@ export interface Mp4BoxNode {
   fields?: BoxField[];
   /** 子 Box 列表（容器 box） */
   children?: Mp4BoxNode[];
+  childrenCount?: number;
+  isContainer?: boolean;
 }
 
 /** Box 字段信息 */
@@ -191,7 +193,26 @@ export interface Mp4BoxTree {
   totalCount: number;
 }
 
-/** MP4 Sample 详情 */
+/** MP4 Box Children Result */
+export interface Mp4BoxChildrenResult {
+  children: Mp4BoxNode[];
+  totalCount: number;
+}
+
+export interface Mp4BoxFieldsResult {
+  headerFields: BoxField[];
+  entryCount?: number;
+  entryStart?: number;
+  entries: BoxField[];
+}
+
+export interface Mp4BoxSearchResult {
+  tree: Mp4BoxTree;
+  matchPaths: number[][];
+  totalMatches: number;
+}
+
+/** MP4 Sample ?情 */
 export interface Mp4SampleDetail {
   trackId: number;
   sampleIndex: number;

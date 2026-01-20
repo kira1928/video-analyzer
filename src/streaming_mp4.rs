@@ -36,6 +36,7 @@ const BOX_MDHD: [u8; 4] = *b"mdhd";
 const BOX_HDLR: [u8; 4] = *b"hdlr";
 const BOX_AVCC: [u8; 4] = *b"avcC";
 const BOX_HVCC: [u8; 4] = *b"hvcC";
+const BOX_ESDS: [u8; 4] = *b"esds";
 
 /// 轨道类型
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1682,6 +1683,47 @@ impl StreamingMp4Parser {
         None
     }
 
+    fn parse_descriptor_size(data: &[u8], pos: &mut usize) -> Option<usize> {
+        let mut size = 0usize;
+        for _ in 0..4 {
+            if *pos >= data.len() {
+                return None;
+            }
+            let b = data[*pos];
+            *pos += 1;
+            size = (size << 7) | (b & 0x7F) as usize;
+            if b & 0x80 == 0 {
+                return Some(size);
+            }
+        }
+        Some(size)
+    }
+
+    fn parse_esds_audio_config(data: &[u8]) -> Option<Vec<u8>> {
+        if data.len() < 4 {
+            return None;
+        }
+        let mut pos = 4usize; // version + flags
+        while pos < data.len() {
+            let tag = data[pos];
+            pos += 1;
+            let size = Self::parse_descriptor_size(data, &mut pos)?;
+            if pos + size > data.len() {
+                break;
+            }
+            if tag == 0x05 {
+                return Some(data[pos..pos + size].to_vec());
+            }
+            pos += size;
+        }
+        None
+    }
+
+    fn extract_esds_audio_config(data: &[u8]) -> Option<Vec<u8>> {
+        let payload = Self::extract_box_payload(data, BOX_ESDS)?;
+        Self::parse_esds_audio_config(&payload)
+    }
+
     fn parse_stsd(&mut self, data: &[u8]) -> Result<(), JsError> {
         if data.len() < 16 {
             return Ok(());
@@ -1747,6 +1789,20 @@ impl StreamingMp4Parser {
                 }
                 if let Some(config) = config {
                     self.video_init_data = Some(config);
+                }
+            }
+
+            if matches!(codec, Codec::Aac) && self.audio_init_data.is_none() {
+                let entry_payload = &data[pos + 8..pos + entry_size];
+                let mut config = None;
+                if entry_payload.len() > 28 {
+                    config = Self::extract_esds_audio_config(&entry_payload[28..]);
+                }
+                if config.is_none() {
+                    config = Self::extract_esds_audio_config(entry_payload);
+                }
+                if let Some(config) = config {
+                    self.audio_init_data = Some(config);
                 }
             }
 

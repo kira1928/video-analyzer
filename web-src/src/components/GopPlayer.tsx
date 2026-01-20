@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { AnalysisResult, Gop, TagSummary } from '../types';
 import { getWasmModule } from '../utils/wasm';
 import { formatDuration } from '../utils/format';
-import { saveFrame, loadFrame, loadCachedFrame, saveAudioBuffer, loadAudioBuffer } from '../utils/gopCache';
+import { saveFrame, loadCachedFrame, saveAudioBuffer, loadAudioBuffer } from '../utils/gopCache';
 import { wasmWorker } from '../workers/wasmWorkerManager';
 import '../styles/GopPlayer.css';
 
@@ -27,6 +27,27 @@ interface FrameThumbnail {
   timestamp: number;
   isKeyframe: boolean;
   imageData: string; // base64 data URL
+}
+
+const AAC_SAMPLE_RATES = [
+  96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
+  16000, 12000, 11025, 8000, 7350
+];
+
+function parseAacConfig(description?: Uint8Array) {
+  if (!description || description.length < 2) {
+    return { codec: 'mp4a.40.2', sampleRate: 44100, channels: 2 };
+  }
+  const audioObjectType = (description[0] >> 3) & 0x1f;
+  const sampleRateIndex = ((description[0] & 0x07) << 1) | (description[1] >> 7);
+  const channelConfig = (description[1] >> 3) & 0x0f;
+  const sampleRate = AAC_SAMPLE_RATES[sampleRateIndex] || 44100;
+  const channels = channelConfig > 0 ? channelConfig : 2;
+  return {
+    codec: `mp4a.40.${audioObjectType || 2}`,
+    sampleRate,
+    channels
+  };
 }
 
 export function GopPlayer({
@@ -129,6 +150,35 @@ export function GopPlayer({
     ctx.drawImage(frame, 0, 0);
     setIsFrameHiResReady(true);
   }, []);
+
+  const drawCachedThumbnail = useCallback((thumbData: string, tagIndex: number) => {
+    currentDisplayTagRef.current = tagIndex;
+    setIsFrameHiResReady(false);
+    drawImageToCanvas(thumbData);
+  }, [drawImageToCanvas]);
+
+  const drawFrameFromCache = useCallback(async (
+    tagIndex: number,
+    index: number,
+    allowThumbFallback: boolean
+  ) => {
+    const cached = await loadCachedFrame(fileId, tagIndex);
+    if (cached?.blob) {
+      drawBlobToCanvas(cached.blob, tagIndex);
+      return true;
+    }
+    if (!allowThumbFallback) return false;
+
+    if (cached?.thumbnail) {
+      drawCachedThumbnail(cached.thumbnail, tagIndex);
+      return false;
+    }
+    const thumb = thumbnailsRef.current[index];
+    if (thumb) {
+      drawThumbnailToCanvas(thumb, tagIndex);
+    }
+    return false;
+  }, [drawBlobToCanvas, drawCachedThumbnail, drawThumbnailToCanvas, fileId]);
 
   useEffect(() => {
     if (autoPlayStart) {
@@ -240,22 +290,13 @@ export function GopPlayer({
 
     // 设置当前帧显示
     setCurrentFrame(index + 1);
-
-    const thumb = thumbnailsRef.current[index];
-    if (thumb) {
-      drawThumbnailToCanvas(thumb, tagIndex);
-    }
-
+    const allowThumbFallback = !isPlaying || index === 0;
     try {
-      // 尝试从缓存加载高画质帧
-      const blob = await loadFrame(fileId, tagIndex);
-      if (blob) {
-        drawBlobToCanvas(blob, tagIndex);
-      }
+      await drawFrameFromCache(tagIndex, index, allowThumbFallback);
     } catch (e) {
       console.error("加载缓存帧失败:", e);
     }
-  }, [fileId, drawBlobToCanvas, drawThumbnailToCanvas]);
+  }, [drawFrameFromCache, isPlaying]);
 
 
   // 创建缩略图
@@ -390,13 +431,9 @@ export function GopPlayer({
       setSelectedThumbnail(currentIndex);
       setCurrentFrame(currentIndex + 1);
 
-      drawThumbnailToCanvas(thumb, thumb.tagIndex);
-
       try {
-        const blob = await loadFrame(fileId, thumb.tagIndex);
-        if (blob) {
-          drawBlobToCanvas(blob, thumb.tagIndex);
-        }
+        const allowThumbFallback = currentIndex === 0 && currentDisplayTagRef.current === null;
+        await drawFrameFromCache(thumb.tagIndex, currentIndex, allowThumbFallback);
       } catch (e) {
         console.error(e);
       }
@@ -428,7 +465,7 @@ export function GopPlayer({
         audioSourceRef.current = null;
       }
     };
-  }, [isPlaying, thumbnails, fileId, drawBlobToCanvas, drawThumbnailToCanvas]); // selectedThumbnail 只在初始读取，循环内自己维护 currentIndex
+  }, [isPlaying, thumbnails, drawFrameFromCache]); // selectedThumbnail 只在初始读取，循环内自己维护 currentIndex
 
   // 初始化解码器和数据
   useEffect(() => {
@@ -744,81 +781,129 @@ export function GopPlayer({
           await decodeGop(decoder, gopVideoTags, fileData, wasm, signal, sampleProvider);
         }
 
-        // === 音频解码逻辑 (始终尝试解码) ===
-        if (fileData && gopAudioTags.length > 0 && 'AudioDecoder' in window) {
+        // === Audio decode ===
+        if (gopAudioTags.length > 0 && 'AudioDecoder' in window) {
           try {
             if (!audioCtxRef.current) {
               audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
             }
 
-            // Check Audio Cache
             const cachedAudio = loadAudioBuffer(fileId, gop.index);
             if (cachedAudio) {
               console.log("🔥 Audio Cache Hit");
               audioBufferRef.current = cachedAudio;
             } else {
               const audioCtx = audioCtxRef.current;
+              const isMP4OrTS = formatLower === 'mp4' || formatLower === 'ts';
 
-              // Simplified AAC handling: assuming AAC LC
-              // Extract AudioSpecificConfig from Sequence Header
-              let description: Uint8Array | undefined;
-              const audioSeqHeader = analysisResult.tags.find(t => t.type === 'audio' && t.isSeqHeader);
-              if (audioSeqHeader) {
-                const offset = audioSeqHeader.offset + 11;
-                const hData = fileData.subarray(offset, offset + audioSeqHeader.size);
-                // FLV Audio: Byte0=Header(Format,Rate,Size,Type). If Format=10(AAC), Byte1=PacketType(0=SeqHead).
-                if ((hData[0] >> 4) === 10) {
-                  description = hData.subarray(2);
-                }
-              }
-
-              const audioFrames: AudioData[] = [];
-              const audioDecoder = new AudioDecoder({
-                output: (f) => audioFrames.push(f),
-                error: (e) => console.error("Audio Decode Error", e)
-              });
-
-              audioDecoder.configure({
-                codec: 'mp4a.40.2',
-                numberOfChannels: 2,
-                sampleRate: 44100,
-                description: description
-              });
-
-              for (const tag of gopAudioTags) {
-                const offset = tag.offset + 11;
-                const chunkData = fileData.subarray(offset, offset + tag.size);
-                if ((chunkData[0] >> 4) === 10 && chunkData[1] === 1) { // AAC Raw
-                  audioDecoder.decode(new EncodedAudioChunk({
-                    type: 'key',
-                    timestamp: tag.timestamp * 1000,
-                    duration: 0,
-                    data: chunkData.subarray(2)
-                  }));
-                }
-              }
-
-              await audioDecoder.flush();
-
-              if (audioFrames.length > 0) {
-                const totalFrames = audioFrames.reduce((acc, f) => acc + f.numberOfFrames, 0);
-                const sampleRate = audioFrames[0].sampleRate;
-                const channels = audioFrames[0].numberOfChannels;
-
+              const buildAudioBuffer = (frames: AudioData[]) => {
+                if (frames.length === 0) return null;
+                const totalFrames = frames.reduce((acc, f) => acc + f.numberOfFrames, 0);
+                const sampleRate = frames[0].sampleRate;
+                const channels = frames[0].numberOfChannels;
                 const buffer = audioCtx.createBuffer(channels, totalFrames, sampleRate);
-
                 for (let ch = 0; ch < channels; ch++) {
                   const dest = buffer.getChannelData(ch);
                   let offset = 0;
-                  for (const frame of audioFrames) {
+                  for (const frame of frames) {
                     frame.copyTo(dest.subarray(offset), { planeIndex: ch });
                     offset += frame.numberOfFrames;
                   }
                 }
-                audioFrames.forEach(f => f.close());
-                audioBufferRef.current = buffer;
-                saveAudioBuffer(fileId, gop.index, buffer);
-                console.log(`Audio Decoded: ${buffer.duration.toFixed(3)}s`);
+                frames.forEach(f => f.close());
+                return buffer;
+              };
+
+              if (isMP4OrTS) {
+                const desc = analysisResult.audioInitData
+                  ? new Uint8Array(analysisResult.audioInitData)
+                  : undefined;
+                if (!desc || desc.length === 0) {
+                  console.warn('Missing audio init data for MP4/TS audio decode');
+                } else {
+                  const { codec, sampleRate, channels } = parseAacConfig(desc);
+                  const audioFrames: AudioData[] = [];
+                  const audioDecoder = new AudioDecoder({
+                    output: (f) => audioFrames.push(f),
+                    error: (e) => console.error("Audio Decode Error", e)
+                  });
+                  audioDecoder.configure({
+                    codec,
+                    numberOfChannels: channels,
+                    sampleRate,
+                    description: desc
+                  });
+
+                  for (const tag of gopAudioTags) {
+                    let chunkData: Uint8Array | null = null;
+                    if (fileData) {
+                      chunkData = fileData.subarray(tag.offset, tag.offset + tag.size);
+                    } else if (isStreamingMode) {
+                      chunkData = await wasmWorker.readSampleData(fileId, tag.index);
+                    }
+                    if (!chunkData) continue;
+                    audioDecoder.decode(new EncodedAudioChunk({
+                      type: 'key',
+                      timestamp: tag.timestamp * 1000,
+                      duration: 0,
+                      data: chunkData
+                    }));
+                  }
+
+                  await audioDecoder.flush();
+                  const buffer = buildAudioBuffer(audioFrames);
+                  if (buffer) {
+                    audioBufferRef.current = buffer;
+                    saveAudioBuffer(fileId, gop.index, buffer);
+                    console.log(`Audio Decoded: ${buffer.duration.toFixed(3)}s`);
+                  }
+                }
+              } else if (fileData) {
+                // FLV AAC
+                let description: Uint8Array | undefined;
+                const audioSeqHeader = analysisResult.tags.find(t => t.type === 'audio' && t.isSeqHeader);
+                if (audioSeqHeader) {
+                  const offset = audioSeqHeader.offset + 11;
+                  const hData = fileData.subarray(offset, offset + audioSeqHeader.size);
+                  if ((hData[0] >> 4) === 10) {
+                    description = hData.subarray(2);
+                  }
+                }
+
+                const { codec, sampleRate, channels } = parseAacConfig(description);
+                const audioFrames: AudioData[] = [];
+                const audioDecoder = new AudioDecoder({
+                  output: (f) => audioFrames.push(f),
+                  error: (e) => console.error("Audio Decode Error", e)
+                });
+
+                audioDecoder.configure({
+                  codec,
+                  numberOfChannels: channels,
+                  sampleRate,
+                  description
+                });
+
+                for (const tag of gopAudioTags) {
+                  const offset = tag.offset + 11;
+                  const chunkData = fileData.subarray(offset, offset + tag.size);
+                  if ((chunkData[0] >> 4) === 10 && chunkData[1] === 1) {
+                    audioDecoder.decode(new EncodedAudioChunk({
+                      type: 'key',
+                      timestamp: tag.timestamp * 1000,
+                      duration: 0,
+                      data: chunkData.subarray(2)
+                    }));
+                  }
+                }
+
+                await audioDecoder.flush();
+                const buffer = buildAudioBuffer(audioFrames);
+                if (buffer) {
+                  audioBufferRef.current = buffer;
+                  saveAudioBuffer(fileId, gop.index, buffer);
+                  console.log(`Audio Decoded: ${buffer.duration.toFixed(3)}s`);
+                }
               }
             }
           } catch (e) {
@@ -838,13 +923,13 @@ export function GopPlayer({
           if (idx >= 0) {
             setSelectedThumbnail(idx);
             setCurrentFrame(idx + 1);
-            drawThumbnailToCanvas(thumbnailsRef.current[idx], thumbnailsRef.current[idx].tagIndex);
+            await drawFrameFromCache(thumbnailsRef.current[idx].tagIndex, idx, true);
           }
         } else if (thumbnailsRef.current.length > 0) {
           // 显示第一帧，但不自动播放（等待用户点击播放按钮）
           setSelectedThumbnail(0);
           setCurrentFrame(1);
-          drawThumbnailToCanvas(thumbnailsRef.current[0], thumbnailsRef.current[0].tagIndex);
+          await drawFrameFromCache(thumbnailsRef.current[0].tagIndex, 0, true);
         }
 
         if (autoPlayStartRef.current && thumbnailsRef.current.length > 0) {
@@ -886,7 +971,7 @@ export function GopPlayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     drawBlobToCanvas,
-    drawThumbnailToCanvas,
+    drawFrameFromCache,
     fileData,
     fileId,
     formatLower,

@@ -13,11 +13,15 @@ interface CachedFrameMeta {
   tagIndex: number;
   hasThumbnail: boolean;
   timestamp: number;
+  frameBytes?: number;
+  thumbBytes?: number;
 }
 
 const DB_NAME = 'VideoAnalyzerCache';
 const STORE_NAME = 'frames';
-const MAX_CACHE_SIZE = 600; // ~100MB capacity
+const MAX_OPFS_BYTES = 500 * 1024 * 1024;
+const ESTIMATED_FRAME_BYTES = 180 * 1024;
+const ESTIMATED_THUMB_BYTES = 12 * 1024;
 
 // === 缓存开关 ===
 let cacheEnabled = true;
@@ -46,6 +50,14 @@ export function setCacheEnabled(enabled: boolean): void {
   }
 }
 
+function estimateMetaBytes(meta: CachedFrameMeta): number {
+  const frameBytes = meta.frameBytes ?? ESTIMATED_FRAME_BYTES;
+  const thumbBytes = meta.hasThumbnail
+    ? (meta.thumbBytes ?? ESTIMATED_THUMB_BYTES)
+    : 0;
+  return frameBytes + thumbBytes;
+}
+
 // === 缓存统计 ===
 export interface CacheStats {
   indexedDBCount: number;
@@ -55,24 +67,26 @@ export interface CacheStats {
 
 export async function getCacheStats(): Promise<CacheStats> {
   let indexedDBCount = 0;
+  let totalBytes = 0;
 
   try {
     const db = await openDB();
-    indexedDBCount = await new Promise<number>((resolve, reject) => {
+    const metas = await new Promise<CachedFrameMeta[]>((resolve, reject) => {
       const transaction = db.transaction(STORE_NAME, 'readonly');
       const store = transaction.objectStore(STORE_NAME);
-      const request = store.count();
-      request.onsuccess = () => resolve(request.result);
+      const request = store.getAll();
+      request.onsuccess = () => resolve(request.result as CachedFrameMeta[]);
       request.onerror = () => reject(request.error);
     });
+    indexedDBCount = metas.length;
+    totalBytes = metas.reduce((sum, meta) => sum + estimateMetaBytes(meta), 0);
   } catch (e) {
     // 忽略错误
   }
 
   const audioBufferCount = audioCache.size;
 
-  // 估算大小 (假设每帧平均 150KB)
-  const estimatedBytes = indexedDBCount * 150 * 1024;
+  const estimatedBytes = totalBytes;
   let estimatedSize = '0 B';
   if (estimatedBytes < 1024) {
     estimatedSize = `${estimatedBytes} B`;
@@ -135,8 +149,14 @@ function getOpfsThumbFileName(fileId: string, tagIndex: number) {
   return `${getOpfsFileName(fileId, tagIndex)}_thumb`;
 }
 
-async function saveToOpfs(fileId: string, tagIndex: number, blob: Blob, thumbnail?: string) {
+async function saveToOpfs(
+  fileId: string,
+  tagIndex: number,
+  blob: Blob,
+  thumbnail?: string
+): Promise<{ frameBytes: number; thumbBytes: number }> {
   const dir = await getOpfsFrameDir();
+  let thumbBytes = 0;
 
   // 1. Save Video Blob
   const fileName = getOpfsFileName(fileId, tagIndex);
@@ -151,9 +171,12 @@ async function saveToOpfs(fileId: string, tagIndex: number, blob: Blob, thumbnai
     const thumbHandle = await dir.getFileHandle(thumbName, { create: true });
     const thumbWritable = await thumbHandle.createWritable();
     const thumbBlob = await dataUrlToBlob(thumbnail);
+    thumbBytes = thumbBlob.size;
     await thumbWritable.write(thumbBlob);
     await thumbWritable.close();
   }
+
+  return { frameBytes: blob.size, thumbBytes };
 }
 
 async function loadFromOpfs(fileId: string, tagIndex: number, hasThumbnail: boolean): Promise<{ blob: Blob, thumbnail?: string }> {
@@ -203,6 +226,48 @@ async function clearOpfs() {
   } catch (e) {
     // Ignore
   }
+}
+
+async function getAllMetas(db: IDBDatabase): Promise<CachedFrameMeta[]> {
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, 'readonly');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.getAll();
+    request.onsuccess = () => resolve(request.result as CachedFrameMeta[]);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function enforceCacheLimit(db: IDBDatabase): Promise<void> {
+  const metas = await getAllMetas(db);
+  if (metas.length === 0) return;
+
+  let totalBytes = metas.reduce((sum, meta) => sum + estimateMetaBytes(meta), 0);
+  if (totalBytes <= MAX_OPFS_BYTES) return;
+
+  metas.sort((a, b) => a.timestamp - b.timestamp);
+  const toDelete: CachedFrameMeta[] = [];
+  for (const meta of metas) {
+    if (totalBytes <= MAX_OPFS_BYTES) break;
+    totalBytes -= estimateMetaBytes(meta);
+    toDelete.push(meta);
+  }
+
+  if (toDelete.length === 0) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    toDelete.forEach(meta => {
+      store.delete([meta.fileId, meta.tagIndex]);
+    });
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+
+  await Promise.all(
+    toDelete.map(meta => deleteFromOpfs(meta.fileId, meta.tagIndex))
+  );
 }
 
 // === IndexedDB Helpers ===
@@ -267,43 +332,29 @@ export async function saveFrame(fileId: string, tagIndex: number, blob: Blob, th
 
   try {
     // 1. Save Blob & Thumbnail to OPFS
-    await saveToOpfs(fileId, tagIndex, blob, thumbnail);
+    const { frameBytes, thumbBytes } = await saveToOpfs(fileId, tagIndex, blob, thumbnail);
 
     // 2. Save Meta to IDB
     const db = await openDB();
-    const transaction = db.transaction(STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(STORE_NAME);
-
     const meta: CachedFrameMeta = {
       fileId,
       tagIndex,
       hasThumbnail: !!thumbnail,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      frameBytes,
+      thumbBytes
     };
-    store.put(meta);
 
-    // 3. LRU Cleanup
-    const countRequest = store.count();
-    countRequest.onsuccess = () => {
-      if (countRequest.result > MAX_CACHE_SIZE) {
-        const allItemsRequest = store.getAll();
-        allItemsRequest.onsuccess = () => {
-          const items = allItemsRequest.result as CachedFrameMeta[];
-          if (items.length > MAX_CACHE_SIZE) {
-            items.sort((a, b) => a.timestamp - b.timestamp);
-            const toDelete = items.slice(0, items.length - MAX_CACHE_SIZE);
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      store.put(meta);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
 
-            // Delete from IDB
-            const deleteTx = db.transaction(STORE_NAME, 'readwrite');
-            const deleteStore = deleteTx.objectStore(STORE_NAME);
-            toDelete.forEach(item => {
-              deleteStore.delete([item.fileId, item.tagIndex]);
-              deleteFromOpfs(item.fileId, item.tagIndex).catch(console.error);
-            });
-          }
-        };
-      }
-    };
+    // 3. LRU Cleanup by total size
+    await enforceCacheLimit(db);
   } catch (e) {
     console.warn('Failed to save frame to cache:', e);
   }
@@ -331,6 +382,16 @@ export async function loadCachedFrame(fileId: string, tagIndex: number): Promise
           try {
             // 2. Load Blob & Thumbnail from OPFS
             const { blob, thumbnail } = await loadFromOpfs(fileId, tagIndex, meta.hasThumbnail);
+            if (meta.frameBytes === undefined || meta.thumbBytes === undefined) {
+              const updatedMeta: CachedFrameMeta = {
+                ...meta,
+                frameBytes: meta.frameBytes ?? blob.size,
+                thumbBytes: meta.thumbBytes ?? (meta.hasThumbnail ? ESTIMATED_THUMB_BYTES : 0)
+              };
+              const updateTx = db.transaction(STORE_NAME, 'readwrite');
+              const updateStore = updateTx.objectStore(STORE_NAME);
+              updateStore.put(updatedMeta);
+            }
             resolve({
               fileId: meta.fileId,
               tagIndex: meta.tagIndex,

@@ -28,6 +28,14 @@ interface HighlightRange {
   type: 'header' | 'content' | 'field';
 }
 
+interface StreamingFieldState {
+  headerFields: BoxField[];
+  entryCount?: number;
+  entryGroups: Map<number, BoxField[]>;
+  loadingGroups: Set<number>;
+  isLoading?: boolean;
+}
+
 const HEX_BYTES_PER_LINE = 16;
 const STREAMING_HEX_CHUNK_BYTES = 4096;
 const STREAMING_HEX_LINE_HEIGHT = 20;
@@ -41,14 +49,6 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
   const [streamingMatchPaths, setStreamingMatchPaths] = useState<Set<string>>(new Set());
   const [streamingSearchResults, setStreamingSearchResults] = useState<string[]>([]);
   const [loadingNodes, setLoadingNodes] = useState<Set<string>>(new Set());
-
-  interface StreamingFieldState {
-    headerFields: BoxField[];
-    entryCount?: number;
-    entryGroups: Map<number, BoxField[]>;
-    loadingGroups: Set<number>;
-    isLoading?: boolean;
-  }
 
   const [streamingFieldsMap, setStreamingFieldsMap] = useState<Map<string, StreamingFieldState>>(new Map());
 

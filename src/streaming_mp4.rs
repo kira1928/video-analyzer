@@ -10,8 +10,8 @@ use crate::mp4_box::{
 use crate::types::*;
 use async_recursion::async_recursion;
 use js_sys::{Function, Promise, Uint8Array};
-use wasm_bindgen::prelude::*;
 use std::io::Cursor;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 /// Box 类型常量
@@ -171,10 +171,7 @@ impl StreamingMp4Parser {
             total
         };
 
-        let tree = Mp4BoxTree {
-            boxes,
-            total_count,
-        };
+        let tree = Mp4BoxTree { boxes, total_count };
 
         serde_wasm_bindgen::to_value(&tree).map_err(|e| JsError::new(&e.to_string()))
     }
@@ -195,8 +192,7 @@ impl StreamingMp4Parser {
                 children: Vec::new(),
                 total_count: 0,
             };
-            return serde_wasm_bindgen::to_value(&empty)
-                .map_err(|e| JsError::new(&e.to_string()));
+            return serde_wasm_bindgen::to_value(&empty).map_err(|e| JsError::new(&e.to_string()));
         }
 
         let header = self
@@ -227,6 +223,14 @@ impl StreamingMp4Parser {
         start: u32,
         count: u32,
     ) -> Result<JsValue, JsError> {
+        web_sys::console::log_1(
+            &format!(
+                "[getMp4BoxFields] box_type={}, offset={}, size={}, start={}, count={}",
+                box_type, offset, size, start, count
+            )
+            .into(),
+        );
+
         let offset = offset as u64;
         let size = size as u64;
         let header = self
@@ -238,26 +242,33 @@ impl StreamingMp4Parser {
         let content_start = offset + header.header_size as u64;
         let content_size = size.saturating_sub(header.header_size as u64);
 
-        let result = self
-            .parse_box_fields_streaming(
-                &box_type,
-                content_start,
-                content_size,
-                start,
-                count,
+        web_sys::console::log_1(
+            &format!(
+                "[getMp4BoxFields] content_start={}, content_size={}, header_size={}",
+                content_start, content_size, header.header_size
             )
+            .into(),
+        );
+
+        let result = self
+            .parse_box_fields_streaming(&box_type, content_start, content_size, start, count)
             .await
             .map_err(|e| JsError::new(&e))?;
+
+        web_sys::console::log_1(
+            &format!(
+                "[getMp4BoxFields] result: {} header fields, entry_count={:?}",
+                result.header_fields.len(),
+                result.entry_count
+            )
+            .into(),
+        );
 
         serde_wasm_bindgen::to_value(&result).map_err(|e| JsError::new(&e.to_string()))
     }
 
     #[wasm_bindgen(js_name = readMp4Bytes)]
-    pub async fn read_mp4_bytes(
-        &self,
-        offset: f64,
-        length: u32,
-    ) -> Result<Uint8Array, JsError> {
+    pub async fn read_mp4_bytes(&self, offset: f64, length: u32) -> Result<Uint8Array, JsError> {
         const MAX_READ_BYTES: usize = 256 * 1024;
 
         let offset = offset as u64;
@@ -292,8 +303,7 @@ impl StreamingMp4Parser {
                 match_paths: Vec::new(),
                 total_matches: 0,
             };
-            return serde_wasm_bindgen::to_value(&empty)
-                .map_err(|e| JsError::new(&e.to_string()));
+            return serde_wasm_bindgen::to_value(&empty).map_err(|e| JsError::new(&e.to_string()));
         }
 
         let (boxes, match_paths, total_matches) = self
@@ -411,12 +421,18 @@ impl StreamingMp4Parser {
 
             let mut children = None;
             if depth > 1 && is_container {
-                let (child_start, child_end) =
-                    self.child_content_range(pos, header.size, header.header_size, &header.box_type_bytes)
-                        .map_err(|e| format!("{:?}", e))?;
+                let (child_start, child_end) = self
+                    .child_content_range(
+                        pos,
+                        header.size,
+                        header.header_size,
+                        &header.box_type_bytes,
+                    )
+                    .map_err(|e| format!("{:?}", e))?;
                 if child_start < child_end {
-                    let (child_boxes, child_count) =
-                        self.parse_boxes_recursive(child_start, child_end, depth - 1).await?;
+                    let (child_boxes, child_count) = self
+                        .parse_boxes_recursive(child_start, child_end, depth - 1)
+                        .await?;
                     total_count += child_count;
                     children = Some(child_boxes);
                 }
@@ -458,9 +474,12 @@ impl StreamingMp4Parser {
             total += 1;
 
             if is_container_like(&header.box_type_bytes) {
-                if let Ok((child_start, child_end)) =
-                    self.child_content_range(pos, header.size, header.header_size, &header.box_type_bytes)
-                {
+                if let Ok((child_start, child_end)) = self.child_content_range(
+                    pos,
+                    header.size,
+                    header.header_size,
+                    &header.box_type_bytes,
+                ) {
                     if child_start < child_end {
                         total += self.count_boxes_recursive(child_start, child_end).await?;
                     }
@@ -503,9 +522,12 @@ impl StreamingMp4Parser {
             let mut child_paths = Vec::new();
 
             if is_container {
-                if let Ok((child_start, child_end)) =
-                    self.child_content_range(pos, header.size, header.header_size, &header.box_type_bytes)
-                {
+                if let Ok((child_start, child_end)) = self.child_content_range(
+                    pos,
+                    header.size,
+                    header.header_size,
+                    &header.box_type_bytes,
+                ) {
                     let (nodes, paths, matches) = self
                         .search_boxes_recursive(child_start, child_end, query, &[])
                         .await?;
@@ -583,30 +605,20 @@ impl StreamingMp4Parser {
         const MAX_FIELD_PAYLOAD_BYTES: usize = 256 * 1024;
 
         match box_type {
-            "stts" => self
-                .parse_entries_stts(content_start, start, count)
-                .await,
-            "stsc" => self
-                .parse_entries_stsc(content_start, start, count)
-                .await,
-            "stsz" => self
-                .parse_entries_stsz(content_start, start, count)
-                .await,
-            "stco" => self
-                .parse_entries_stco(content_start, start, count, false)
-                .await,
-            "co64" => self
-                .parse_entries_stco(content_start, start, count, true)
-                .await,
-            "stss" => self
-                .parse_entries_stss(content_start, start, count)
-                .await,
-            "ctts" => self
-                .parse_entries_ctts(content_start, start, count)
-                .await,
-            "elst" => self
-                .parse_entries_elst(content_start, start, count)
-                .await,
+            "stts" => self.parse_entries_stts(content_start, start, count).await,
+            "stsc" => self.parse_entries_stsc(content_start, start, count).await,
+            "stsz" => self.parse_entries_stsz(content_start, start, count).await,
+            "stco" => {
+                self.parse_entries_stco(content_start, start, count, false)
+                    .await
+            }
+            "co64" => {
+                self.parse_entries_stco(content_start, start, count, true)
+                    .await
+            }
+            "stss" => self.parse_entries_stss(content_start, start, count).await,
+            "ctts" => self.parse_entries_ctts(content_start, start, count).await,
+            "elst" => self.parse_entries_elst(content_start, start, count).await,
             "mdat" => Ok(Mp4BoxFieldsResult {
                 header_fields: vec![BoxField::new(
                     "data_size",
@@ -625,10 +637,12 @@ impl StreamingMp4Parser {
                 if content_size as usize > MAX_FIELD_PAYLOAD_BYTES {
                     return Ok(empty_fields());
                 }
-                let payload = self.read_range(content_start, content_size as usize).await?;
+                let payload = self
+                    .read_range(content_start, content_size as usize)
+                    .await?;
                 let mut cursor = Cursor::new(payload);
-                let fields = parse_box_fields(&mut cursor, box_type, 0, content_size)
-                    .unwrap_or_default();
+                let fields =
+                    parse_box_fields(&mut cursor, box_type, 0, content_size).unwrap_or_default();
                 Ok(Mp4BoxFieldsResult {
                     header_fields: fields,
                     entry_count: None,
@@ -650,8 +664,7 @@ impl StreamingMp4Parser {
             return Ok(empty_fields());
         }
         let version = header[0];
-        let entry_count =
-            u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let entry_count = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
         let mut header_fields = Vec::new();
         header_fields.push(BoxField::new("version", version, "版本号"));
         header_fields.push(BoxField::new(
@@ -660,9 +673,9 @@ impl StreamingMp4Parser {
             "条目数量，每条描述一组具有相同时长的采样",
         ));
 
-        let (entries, entry_start) =
-            self.read_stts_entries(content_start + 8, entry_count, start, count)
-                .await?;
+        let (entries, entry_start) = self
+            .read_stts_entries(content_start + 8, entry_count, start, count)
+            .await?;
 
         Ok(Mp4BoxFieldsResult {
             header_fields,
@@ -729,8 +742,7 @@ impl StreamingMp4Parser {
             return Ok(empty_fields());
         }
         let version = header[0];
-        let entry_count =
-            u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let entry_count = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
         let mut header_fields = Vec::new();
         header_fields.push(BoxField::new("version", version, "版本号"));
         header_fields.push(BoxField::new(
@@ -739,9 +751,9 @@ impl StreamingMp4Parser {
             "条目数量，定义 Sample 在 Chunk 中的分布规律",
         ));
 
-        let (entries, entry_start) =
-            self.read_stsc_entries(content_start + 8, entry_count, start, count)
-                .await?;
+        let (entries, entry_start) = self
+            .read_stsc_entries(content_start + 8, entry_count, start, count)
+            .await?;
 
         Ok(Mp4BoxFieldsResult {
             header_fields,
@@ -817,10 +829,8 @@ impl StreamingMp4Parser {
             return Ok(empty_fields());
         }
         let version = header[0];
-        let sample_size =
-            u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
-        let sample_count =
-            u32::from_be_bytes([header[8], header[9], header[10], header[11]]);
+        let sample_size = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let sample_count = u32::from_be_bytes([header[8], header[9], header[10], header[11]]);
 
         let mut header_fields = Vec::new();
         header_fields.push(BoxField::new("version", version, "版本号"));
@@ -848,9 +858,9 @@ impl StreamingMp4Parser {
             });
         }
 
-        let (entries, entry_start) =
-            self.read_stsz_entries(content_start + 12, sample_count, start, count)
-                .await?;
+        let (entries, entry_start) = self
+            .read_stsz_entries(content_start + 12, sample_count, start, count)
+            .await?;
 
         Ok(Mp4BoxFieldsResult {
             header_fields,
@@ -907,8 +917,7 @@ impl StreamingMp4Parser {
             return Ok(empty_fields());
         }
         let version = header[0];
-        let entry_count =
-            u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let entry_count = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
         let mut header_fields = Vec::new();
         header_fields.push(BoxField::new("version", version, "版本号"));
         header_fields.push(BoxField::new("entry_count", entry_count, "Chunk 数量"));
@@ -997,8 +1006,7 @@ impl StreamingMp4Parser {
             return Ok(empty_fields());
         }
         let version = header[0];
-        let entry_count =
-            u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let entry_count = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
         let mut header_fields = Vec::new();
         header_fields.push(BoxField::new("version", version, "版本号"));
         header_fields.push(BoxField::new(
@@ -1007,9 +1015,9 @@ impl StreamingMp4Parser {
             "同步采样（关键帧）数量",
         ));
 
-        let (entries, entry_start) =
-            self.read_stss_entries(content_start + 8, entry_count, start, count)
-                .await?;
+        let (entries, entry_start) = self
+            .read_stss_entries(content_start + 8, entry_count, start, count)
+            .await?;
 
         Ok(Mp4BoxFieldsResult {
             header_fields,
@@ -1065,8 +1073,7 @@ impl StreamingMp4Parser {
             return Ok(empty_fields());
         }
         let version = header[0];
-        let entry_count =
-            u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let entry_count = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
         let mut header_fields = Vec::new();
         header_fields.push(BoxField::new(
             "version",
@@ -1083,9 +1090,9 @@ impl StreamingMp4Parser {
             "条目数量，每条描述一组 CTS 偏移",
         ));
 
-        let (entries, entry_start) =
-            self.read_ctts_entries(content_start + 8, entry_count, start, count, version)
-                .await?;
+        let (entries, entry_start) = self
+            .read_ctts_entries(content_start + 8, entry_count, start, count, version)
+            .await?;
 
         Ok(Mp4BoxFieldsResult {
             header_fields,
@@ -1140,7 +1147,12 @@ impl StreamingMp4Parser {
             fields.push(BoxField::new(
                 &format!("entry[{}]", idx),
                 format!("count={}, offset={}", sample_count, offset),
-                &format!("第 {} 条：{} 个采样，CTS = DTS + {}", idx + 1, sample_count, offset),
+                &format!(
+                    "第 {} 条：{} 个采样，CTS = DTS + {}",
+                    idx + 1,
+                    sample_count,
+                    offset
+                ),
             ));
         }
         Ok((fields, Some(start)))
@@ -1157,8 +1169,7 @@ impl StreamingMp4Parser {
             return Ok(empty_fields());
         }
         let version = header[0];
-        let entry_count =
-            u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let entry_count = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
         let mut header_fields = Vec::new();
         header_fields.push(BoxField::new("version", version, "版本号，影响字段大小"));
         header_fields.push(BoxField::new(
@@ -1193,7 +1204,9 @@ impl StreamingMp4Parser {
         }
         let entry_size = if version == 1 { 20 } else { 12 };
         let byte_start = entries_start + start as u64 * entry_size;
-        let bytes = self.read_range(byte_start, count as usize * entry_size as usize).await?;
+        let bytes = self
+            .read_range(byte_start, count as usize * entry_size as usize)
+            .await?;
         let mut fields = Vec::new();
         for i in 0..count as usize {
             let base = i * entry_size as usize;
@@ -1285,6 +1298,8 @@ struct StreamingTrack {
     // 初始化数据偏移和大小
     init_data_offset: Option<u64>,
     init_data_size: Option<u32>,
+    // 初始化数据列表（与 stsd entry 对齐）
+    init_data_list: Vec<Vec<u8>>,
     // chunk offsets
     chunk_offsets: Vec<u64>,
     // stsc entries
@@ -1325,7 +1340,9 @@ pub struct StreamingMp4Parser {
     moov_size: u64,
     // 初始化数据（avcC/hvcC）
     video_init_data: Option<Vec<u8>>,
+    video_init_data_list: Option<Vec<Vec<u8>>>,
     audio_init_data: Option<Vec<u8>>,
+    audio_init_data_list: Option<Vec<Vec<u8>>>,
     box_tree_total_count: Option<usize>,
 }
 
@@ -1350,7 +1367,9 @@ impl StreamingMp4Parser {
             moov_offset: 0,
             moov_size: 0,
             video_init_data: None,
+            video_init_data_list: None,
             audio_init_data: None,
+            audio_init_data_list: None,
             box_tree_total_count: None,
         }
     }
@@ -1553,6 +1572,7 @@ impl StreamingMp4Parser {
             height: None,
             init_data_offset: None,
             init_data_size: None,
+            init_data_list: Vec::new(),
             chunk_offsets: Vec::new(),
             stsc_entries: Vec::new(),
         });
@@ -1737,14 +1757,16 @@ impl StreamingMp4Parser {
                 break;
             }
             let entry_size =
-                u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+                u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                    as usize;
             if entry_size < 8 || pos + entry_size > data.len() {
                 break;
             }
 
-            let entry_type: [u8; 4] =
-                [data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]];
+            let entry_type: [u8; 4] = [data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]];
             let codec = Codec::from(&entry_type);
+            let mut video_config: Option<Vec<u8>> = None;
+            let mut audio_config: Option<Vec<u8>> = None;
 
             if entry_index == 0 {
                 if let Some(track) = self.tracks.last_mut() {
@@ -1752,12 +1774,10 @@ impl StreamingMp4Parser {
 
                     // 视频条目: 解析宽高
                     if matches!(codec, Codec::H264 | Codec::H265) && entry_size >= 36 {
-                        track.width = Some(
-                            u16::from_be_bytes([data[pos + 32], data[pos + 33]]) as u32,
-                        );
-                        track.height = Some(
-                            u16::from_be_bytes([data[pos + 34], data[pos + 35]]) as u32,
-                        );
+                        track.width =
+                            Some(u16::from_be_bytes([data[pos + 32], data[pos + 33]]) as u32);
+                        track.height =
+                            Some(u16::from_be_bytes([data[pos + 34], data[pos + 35]]) as u32);
 
                         self.has_video = true;
                         self.video_codec = Some(codec.clone());
@@ -1772,7 +1792,7 @@ impl StreamingMp4Parser {
                 }
             }
 
-            if matches!(codec, Codec::H264 | Codec::H265) && self.video_init_data.is_none() {
+            if matches!(codec, Codec::H264 | Codec::H265) {
                 let target = if matches!(codec, Codec::H265) {
                     BOX_HVCC
                 } else {
@@ -1788,11 +1808,11 @@ impl StreamingMp4Parser {
                     config = Self::extract_box_payload(entry_payload, target);
                 }
                 if let Some(config) = config {
-                    self.video_init_data = Some(config);
+                    video_config = Some(config);
                 }
             }
 
-            if matches!(codec, Codec::Aac) && self.audio_init_data.is_none() {
+            if matches!(codec, Codec::Aac) {
                 let entry_payload = &data[pos + 8..pos + entry_size];
                 let mut config = None;
                 if entry_payload.len() > 28 {
@@ -1802,11 +1822,47 @@ impl StreamingMp4Parser {
                     config = Self::extract_esds_audio_config(entry_payload);
                 }
                 if let Some(config) = config {
-                    self.audio_init_data = Some(config);
+                    audio_config = Some(config);
+                }
+            }
+
+            if let Some(track) = self.tracks.last_mut() {
+                let list_entry = video_config
+                    .as_ref()
+                    .or_else(|| audio_config.as_ref())
+                    .cloned()
+                    .unwrap_or_default();
+                track.init_data_list.push(list_entry);
+            }
+
+            if matches!(codec, Codec::H264 | Codec::H265) && self.video_init_data.is_none() {
+                if let Some(config) = video_config.as_ref() {
+                    self.video_init_data = Some(config.clone());
+                }
+            }
+
+            if matches!(codec, Codec::Aac) && self.audio_init_data.is_none() {
+                if let Some(config) = audio_config.as_ref() {
+                    self.audio_init_data = Some(config.clone());
                 }
             }
 
             pos += entry_size;
+        }
+
+        if let Some(track) = self.tracks.last() {
+            if track.track_type == TrackType::Video
+                && self.video_init_data_list.is_none()
+                && !track.init_data_list.is_empty()
+            {
+                self.video_init_data_list = Some(track.init_data_list.clone());
+            }
+            if track.track_type == TrackType::Audio
+                && self.audio_init_data_list.is_none()
+                && !track.init_data_list.is_empty()
+            {
+                self.audio_init_data_list = Some(track.init_data_list.clone());
+            }
         }
 
         Ok(())
@@ -2133,7 +2189,9 @@ impl StreamingMp4Parser {
             };
 
             let pts_ms = if track.timescale > 0 {
-                dts_ms.wrapping_add((sample.cts_offset * 1000 / track.timescale as i32) as u32)
+                let cts_ms = (sample.cts_offset as i64) * 1000 / track.timescale as i64;
+                let pts = dts_ms as i64 + cts_ms;
+                if pts < 0 { 0 } else { pts as u32 }
             } else {
                 dts_ms
             };
@@ -2216,7 +2274,7 @@ impl StreamingMp4Parser {
                 } else {
                     "audio".to_string()
                 },
-                timestamp: dts_ms,
+                timestamp: pts_ms,
                 size: sample.size,
                 offset: sample.offset,
                 is_keyframe,
@@ -2255,7 +2313,7 @@ impl StreamingMp4Parser {
         }
 
         let result = AnalysisResult {
-            format: "mp4".to_string(),
+            format: "MP4".to_string(),
             file_size: self.file_size,
             duration: self.duration_ms as f64 / 1000.0,
             has_video: self.has_video,
@@ -2270,7 +2328,7 @@ impl StreamingMp4Parser {
             keyframe_count,
             anomalies: Vec::new(),
             video_init_data: self.video_init_data.clone(),
-            video_init_data_list: None, // 流式解析暂不支持多配置
+            video_init_data_list: self.video_init_data_list.clone(),
             audio_init_data: self.audio_init_data.clone(),
             segments: None,
         };
@@ -2307,7 +2365,9 @@ impl StreamingMp4Parser {
             };
 
             let pts_ms = if track.timescale > 0 {
-                dts_ms.wrapping_add((sample.cts_offset * 1000 / track.timescale as i32) as u32)
+                let cts_ms = (sample.cts_offset as i64) * 1000 / track.timescale as i64;
+                let pts = dts_ms as i64 + cts_ms;
+                if pts < 0 { 0 } else { pts as u32 }
             } else {
                 dts_ms
             };
@@ -2378,8 +2438,12 @@ impl StreamingMp4Parser {
 
             tags.push(TagSummary {
                 index: idx,
-                tag_type: if is_video { "video".to_string() } else { "audio".to_string() },
-                timestamp: dts_ms,
+                tag_type: if is_video {
+                    "video".to_string()
+                } else {
+                    "audio".to_string()
+                },
+                timestamp: pts_ms,
                 size: sample.size,
                 offset: sample.offset,
                 is_keyframe,
@@ -2415,7 +2479,7 @@ impl StreamingMp4Parser {
         }
 
         let mut result = AnalysisResult {
-            format: "mp4".to_string(),
+            format: "MP4".to_string(),
             file_size: self.file_size,
             duration: self.duration_ms as f64 / 1000.0,
             has_video: self.has_video,
@@ -2430,7 +2494,7 @@ impl StreamingMp4Parser {
             keyframe_count,
             anomalies: Vec::new(),
             video_init_data: self.video_init_data.clone(),
-            video_init_data_list: None,
+            video_init_data_list: self.video_init_data_list.clone(),
             audio_init_data: self.audio_init_data.clone(),
             segments: None,
         };

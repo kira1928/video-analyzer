@@ -735,3 +735,121 @@
 .field-group-content table {
   margin: 0;
 }
+
+.field-value-item {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  padding: 2px 0;
+  color: #666;
+}
+
+/* 多级分组样式 */
+.field-supergroup {
+  margin-bottom: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.field-supergroup-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: rgba(100, 149, 237, 0.1);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.field-supergroup-header:hover {
+  background: rgba(100, 149, 237, 0.2);
+}
+
+.field-supergroup-content {
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.group-title {
+  flex: 1;
+}
+
+.group-loading {
+  color: #f5a623;
+  font-size: 11px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+.field-group-empty {
+  padding: 16px;
+  text-align: center;
+  color: #666;
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  margin: 8px;
+}
+
+.field-loading {
+  padding: 20px;
+  text-align: center;
+  color: #6495ed;
+  font-size: 13px;
+}
+
+/* Hex 跳转控件 */
+.hex-jump-controls {
+  position: sticky;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 12px 16px;
+  background: rgba(0, 0, 0, 0.85);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  backdrop-filter: blur(8px);
+}
+
+.hex-jump-input {
+  flex: 0 0 auto;
+  width: 250px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  color: #fff;
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 12px;
+  transition: border-color 0.2s;
+}
+
+.hex-jump-input:focus {
+  outline: none;
+  border-color: #6495ed;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.hex-jump-input::placeholder {
+  color: #666;
+}
+
+.hex-jump-hint {
+  color: #888;
+  font-size: 11px;
+}

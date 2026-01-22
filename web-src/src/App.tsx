@@ -38,6 +38,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<'gop' | 'tag'>('gop');
   const [selectedTagIndex, setSelectedTagIndex] = useState<number | null>(null);
   const [selectedTag, setSelectedTag] = useState<TagSummary | null>(null);
+
   const [playingGop, setPlayingGop] = useState<any | null>(null);
   const [initialTagForGop, setInitialTagForGop] = useState<number | undefined>(undefined);
   const [autoPlayNext, setAutoPlayNext] = useState(false);
@@ -59,6 +60,13 @@ function App() {
   const [loadedTags, setLoadedTags] = useState<Map<number, TagSummary>>(new Map());  // 已加载的 samples
   const [loadedGops, setLoadedGops] = useState<Gop[]>([]);  // 已加载的 GOPs
   const [isLoadingPage, setIsLoadingPage] = useState(false);  // 是否正在加载页面数据
+
+  const gopsForPlayer = analysisResult
+    ? (isStreamingMode ? loadedGops : analysisResult.gops)
+    : [];
+  const playingGopListIndex = playingGop
+    ? gopsForPlayer.findIndex(g => g.index === playingGop.index)
+    : -1;
 
   // Sample/Tag 列表筛选状态
   const [tagTypeFilter, setTagTypeFilter] = useState<'all' | 'video' | 'audio'>('all');
@@ -259,6 +267,7 @@ function App() {
     setCurrentFile(file);
 
     const fid = `${file.name}-${file.size}-${file.lastModified}`;
+    console.log(`[App] 生成 fileId: '${fid}' (name='${file.name}', size=${file.size}, lastModified=${file.lastModified})`);
     setFileId(fid);
 
     try {
@@ -311,25 +320,26 @@ function App() {
         setLoadedGops([]);  // 清空已加载的 GOPs
 
         // 构造一个临时的 AnalysisResult，只包含元数据，tags/gops 为空
-        const mockResult: AnalysisResult = {
-          format: metadata.format || 'mp4',
-          fileSize: metadata.fileSize || 0,
-          duration: metadata.duration || 0,
-          videoTagCount: metadata.videoTagCount || 0,
-          audioTagCount: metadata.audioTagCount || 0,
-          hasVideo: (metadata.videoTagCount || 0) > 0,
-          hasAudio: (metadata.audioTagCount || 0) > 0,
-          tags: [],  // 空的，按需加载
-          gops: [],  // 空的，按需加载
-          videoTimeline: [],
-          audioTimeline: [],
-          scriptTagCount: 0,
-          keyframeCount: metadata.keyframeCount || 0,
-          anomalies: [],
-          videoInitData: metadata.videoInitData,
-          audioInitData: metadata.audioInitData,
-          segments: metadata.segments || undefined,
-        };
+          const mockResult: AnalysisResult = {
+            format: metadata.format || 'mp4',
+            fileSize: metadata.fileSize || 0,
+            duration: metadata.duration || 0,
+            videoTagCount: metadata.videoTagCount || 0,
+            audioTagCount: metadata.audioTagCount || 0,
+            hasVideo: (metadata.videoTagCount || 0) > 0,
+            hasAudio: (metadata.audioTagCount || 0) > 0,
+            tags: [],  // 空的，按需加载
+            gops: [],  // 空的，按需加载
+            videoTimeline: [],
+            audioTimeline: [],
+            scriptTagCount: 0,
+            keyframeCount: metadata.keyframeCount || 0,
+            anomalies: [],
+            videoInitData: metadata.videoInitData,
+            videoInitDataList: metadata.videoInitDataList,
+            audioInitData: metadata.audioInitData,
+            segments: metadata.segments || undefined,
+          };
 
         console.log(`[App] mockResult:`, mockResult);
 
@@ -357,17 +367,17 @@ function App() {
         // 小文件：加载到内存解析
         setAnalysisProgress('读取文件...');
         setAnalysisProgressPercent(10);
-        
+
         const buffer = await file.arrayBuffer();
         const data = new Uint8Array(buffer);
         setFileData(data);
-        
+
         setAnalysisProgress('解析视频结构...');
         setAnalysisProgressPercent(30);
 
         const result = parseVideo(data);
         setAnalysisResult(result);
-        
+
         setAnalysisProgressPercent(80);
 
         // 如果是 MP4 格式，解析 Box 树
@@ -380,7 +390,7 @@ function App() {
             console.warn('无法解析 MP4 Box 树:', e);
           }
         }
-        
+
         // 小文件模式解析完成
         setAnalysisProgress(`解析完成！共 ${result.tags.length.toLocaleString()} 个 ${result.format?.toLowerCase() === 'mp4' ? 'sample' : '标签'}`);
         setAnalysisProgressPercent(100);
@@ -586,6 +596,9 @@ function App() {
           <SegmentPanel
             result={analysisResult}
             fileData={fileData}
+            currentFile={currentFile}
+            fileId={fileId}
+            isStreamingMode={isStreamingMode}
           />
 
           {/* 主内容区 */}
@@ -806,62 +819,62 @@ function App() {
                     }
 
                     return gopsToRender.map(gop => {
-                    // 计算实际视频帧数：流式模式用 frameCount，否则从 tags 计算
-                    const actualFrameCount = isStreamingMode
-                      ? gop.frameCount
-                      : analysisResult.tags.filter(
-                        t => t.index >= gop.startIndex && t.index <= gop.endIndex && t.type === 'video' && !t.isSeqHeader
-                      ).length;
-                    return (
-                      <div key={gop.index} className="gop-item">
-                        <div className="gop-content">
-                          <div className="gop-title">GOP #{gop.index + 1}</div>
-                          <div className="gop-info">
-                            <span className="gop-time" title="视频中的开始时间">📍 {formatDuration(gop.startTime)}</span>
-                            <span className="gop-meta">|</span>
-                            <span className="gop-frames" title="帧数">{actualFrameCount} 帧</span>
-                            <span className="gop-meta">|</span>
-                            <span className="gop-duration" title="GOP 时长">⏱️ {gop.duration.toFixed(2)}s</span>
+                      // 计算实际视频帧数：流式模式用 frameCount，否则从 tags 计算
+                      const actualFrameCount = isStreamingMode
+                        ? gop.frameCount
+                        : analysisResult.tags.filter(
+                          t => t.index >= gop.startIndex && t.index <= gop.endIndex && t.type === 'video' && !t.isSeqHeader
+                        ).length;
+                      return (
+                        <div key={gop.index} className="gop-item">
+                          <div className="gop-content">
+                            <div className="gop-title">GOP #{gop.index + 1}</div>
+                            <div className="gop-info">
+                              <span className="gop-time" title="视频中的开始时间">📍 {formatDuration(gop.startTime)}</span>
+                              <span className="gop-meta">|</span>
+                              <span className="gop-frames" title="帧数">{actualFrameCount} 帧</span>
+                              <span className="gop-meta">|</span>
+                              <span className="gop-duration" title="GOP 时长">⏱️ {gop.duration.toFixed(2)}s</span>
+                            </div>
+                          </div>
+                          <div className="gop-actions">
+                            <button
+                              className="gop-btn"
+                              onClick={() => setPlayingGop(gop)}
+                              title="播放 GOP"
+                            >
+                              ▶️
+                            </button>
+                            <button
+                              className="gop-btn"
+                              onClick={async () => {
+                                if (isStreamingMode) {
+                                  // 流式模式：从 WASM 缓存获取 tag 信息
+                                  try {
+                                    const tag = await wasmWorker.getSample(fileId, gop.startIndex);
+                                    if (tag) {
+                                      setSelectedTagIndex(tag.index);
+                                      setSelectedTag(tag);
+                                    }
+                                  } catch (e) {
+                                    alert('⚠️ 获取详情失败\n\n' + (e instanceof Error ? e.message : String(e)));
+                                  }
+                                  return;
+                                }
+                                const firstTag = analysisResult.tags.find(t => t.index === gop.startIndex);
+                                if (firstTag) {
+                                  setSelectedTagIndex(firstTag.index);
+                                  setSelectedTag(firstTag);
+                                }
+                              }}
+                              title="查看详情"
+                            >
+                              🔍
+                            </button>
                           </div>
                         </div>
-                        <div className="gop-actions">
-                          <button
-                            className="gop-btn"
-                            onClick={() => setPlayingGop(gop)}
-                            title="播放 GOP"
-                          >
-                            ▶️
-                          </button>
-                          <button
-                            className="gop-btn"
-                            onClick={async () => {
-                              if (isStreamingMode) {
-                                // 流式模式：从 WASM 缓存获取 tag 信息
-                                try {
-                                  const tag = await wasmWorker.getSample(fileId, gop.startIndex);
-                                  if (tag) {
-                                    setSelectedTagIndex(tag.index);
-                                    setSelectedTag(tag);
-                                  }
-                                } catch (e) {
-                                  alert('⚠️ 获取详情失败\n\n' + (e instanceof Error ? e.message : String(e)));
-                                }
-                                return;
-                              }
-                              const firstTag = analysisResult.tags.find(t => t.index === gop.startIndex);
-                              if (firstTag) {
-                                setSelectedTagIndex(firstTag.index);
-                                setSelectedTag(firstTag);
-                              }
-                            }}
-                            title="查看详情"
-                          >
-                            🔍
-                          </button>
-                        </div>
-                      </div>
-                    )
-                  })
+                      )
+                    })
                   })()
                 ) : (
                   // Sample/Tag 列表
@@ -946,6 +959,8 @@ function App() {
         <GopPlayer
           fileId={fileId}
           gop={playingGop}
+          gops={gopsForPlayer}
+          currentGopListIndex={playingGopListIndex >= 0 ? playingGopListIndex : undefined}
           fileData={fileData}
           analysisResult={analysisResult}
           autoPlayNext={autoPlayNext}

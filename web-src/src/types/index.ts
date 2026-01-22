@@ -255,6 +255,8 @@ export interface VideoAnalyzerModule {
   get_segment_info: (resultJson: string) => any;
   split_flv_segment: (fileData: Uint8Array, resultJson: string, segmentIndex: number) => Uint8Array;
   split_mp4_segment: (fileData: Uint8Array, resultJson: string, segmentIndex: number) => Uint8Array;
+  // 流式模式分段
+  splitMp4SegmentStreaming: (fileId: string, fileData: Uint8Array, segmentIndex: number) => Uint8Array;
 }
 
 

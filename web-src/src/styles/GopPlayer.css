@@ -147,6 +147,12 @@ canvas {
   scrollbar-width: thin;
 }
 
+.gallery-empty {
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 12px 4px;
+}
+
 .gallery-scroll::-webkit-scrollbar {
   height: 6px;
 }

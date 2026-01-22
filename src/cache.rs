@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use wasm_bindgen::prelude::*;
 
 // 全局缓存：存储解析结果
-static RESULT_CACHE: Lazy<Mutex<HashMap<String, Box<AnalysisResult>>>> =
+pub static RESULT_CACHE: Lazy<Mutex<HashMap<String, Box<AnalysisResult>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// 内部函数：直接缓存 AnalysisResult（不经过 JS 反序列化）
@@ -55,6 +55,8 @@ struct Metadata {
     segments: Option<SegmentInfo>,
     #[serde(rename = "videoInitData", skip_serializing_if = "Option::is_none")]
     video_init_data: Option<Vec<u8>>,
+    #[serde(rename = "videoInitDataList", skip_serializing_if = "Option::is_none")]
+    video_init_data_list: Option<Vec<Vec<u8>>>,
     #[serde(rename = "audioInitData", skip_serializing_if = "Option::is_none")]
     audio_init_data: Option<Vec<u8>>,
 }
@@ -77,6 +79,7 @@ pub fn get_metadata(file_id: String) -> Result<JsValue, JsValue> {
             has_segments: result.segments.is_some(),
             segments: result.segments.clone(),
             video_init_data: result.video_init_data.clone(),
+            video_init_data_list: result.video_init_data_list.clone(),
             audio_init_data: result.audio_init_data.clone(),
         };
 

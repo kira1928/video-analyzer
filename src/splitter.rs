@@ -1,4 +1,3 @@
-
 //! 视频分段模块
 //!
 //! 检测视频中的编码参数变化，并提供分割功能
@@ -310,7 +309,10 @@ pub fn split_flv_segment(
     Ok(Uint8Array::from(output.as_slice()))
 }
 
-fn find_sequence_header_for_segment(result: &AnalysisResult, segment_index: usize) -> Option<usize> {
+fn find_sequence_header_for_segment(
+    result: &AnalysisResult,
+    segment_index: usize,
+) -> Option<usize> {
     let segments = result.segments.as_ref()?;
     let segment = segments.segments.get(segment_index)?;
 
@@ -321,7 +323,9 @@ fn find_sequence_header_for_segment(result: &AnalysisResult, segment_index: usiz
             .position(|t| t.tag_type == "video" && t.is_seq_header);
     }
 
-    let start_idx = segment.start_tag_index.min(result.tags.len().saturating_sub(1));
+    let start_idx = segment
+        .start_tag_index
+        .min(result.tags.len().saturating_sub(1));
     result.tags[..=start_idx]
         .iter()
         .rposition(|t| t.tag_type == "video" && t.is_seq_header)
@@ -409,8 +413,18 @@ fn read_mp4_box_header(data: &[u8], offset: usize) -> Option<Mp4BoxInfo> {
         return None;
     }
 
-    let size = u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as u64;
-    let box_type = [data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]];
+    let size = u32::from_be_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]) as u64;
+    let box_type = [
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ];
     let mut header_size = 8usize;
     let mut box_size = size;
 
@@ -496,8 +510,10 @@ fn parse_tkhd_track_info(data: &[u8]) -> Option<(u32, u32, u32)> {
         if data.len() < pos + 8 {
             return None;
         }
-        let width_fixed = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
-        let height_fixed = u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+        let width_fixed =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+        let height_fixed =
+            u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
         let width = width_fixed >> 16;
         let height = height_fixed >> 16;
         (track_id, width, height)
@@ -520,8 +536,10 @@ fn parse_tkhd_track_info(data: &[u8]) -> Option<(u32, u32, u32)> {
         if data.len() < pos + 8 {
             return None;
         }
-        let width_fixed = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
-        let height_fixed = u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+        let width_fixed =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+        let height_fixed =
+            u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
         let width = width_fixed >> 16;
         let height = height_fixed >> 16;
         (track_id, width, height)
@@ -549,7 +567,8 @@ fn parse_stsd_entries(data: &[u8]) -> Vec<Vec<u8>> {
         if pos + 8 > data.len() {
             break;
         }
-        let size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        let size =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
         if size < 8 || pos + size > data.len() {
             break;
         }
@@ -588,7 +607,9 @@ fn extract_mp4_track_infos(file_data: &[u8]) -> Result<Vec<Mp4TrackInfo>, JsErro
                 let payload_start = child.offset + child.header_size;
                 let payload_end = child.offset + child.size;
                 if payload_end <= file_data.len() {
-                    if let Some((tid, w, h)) = parse_tkhd_track_info(&file_data[payload_start..payload_end]) {
+                    if let Some((tid, w, h)) =
+                        parse_tkhd_track_info(&file_data[payload_start..payload_end])
+                    {
                         track_id = Some(tid);
                         width = w;
                         height = h;
@@ -613,10 +634,13 @@ fn extract_mp4_track_infos(file_data: &[u8]) -> Result<Vec<Mp4TrackInfo>, JsErro
                                 let stbl_end = minf_child.offset + minf_child.size;
                                 for stbl_child in iter_mp4_boxes(file_data, stbl_start, stbl_end) {
                                     if &stbl_child.box_type == b"stsd" {
-                                        let payload_start = stbl_child.offset + stbl_child.header_size;
+                                        let payload_start =
+                                            stbl_child.offset + stbl_child.header_size;
                                         let payload_end = stbl_child.offset + stbl_child.size;
                                         if payload_end <= file_data.len() {
-                                            stsd_entries = parse_stsd_entries(&file_data[payload_start..payload_end]);
+                                            stsd_entries = parse_stsd_entries(
+                                                &file_data[payload_start..payload_end],
+                                            );
                                         }
                                     }
                                 }
@@ -676,9 +700,9 @@ fn build_mvhd(timescale: u32, duration: u32, next_track_id: u32) -> Vec<u8> {
     push_u16(&mut payload, 0x0100);
     payload.extend_from_slice(&[0u8; 10]);
     payload.extend_from_slice(&[
-        0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00,
+        0x00, 0x00,
     ]);
     payload.extend_from_slice(&[0u8; 24]);
     push_u32(&mut payload, next_track_id);
@@ -699,9 +723,9 @@ fn build_tkhd(track_id: u32, duration: u32, width: u32, height: u32, is_audio: b
     push_u16(&mut payload, if is_audio { 0x0100 } else { 0x0000 });
     push_u16(&mut payload, 0);
     payload.extend_from_slice(&[
-        0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00,
+        0x00, 0x00,
     ]);
     push_u32(&mut payload, width << 16);
     push_u32(&mut payload, height << 16);
@@ -801,7 +825,11 @@ fn build_ctts(samples: &[Mp4SegmentSample]) -> Option<Vec<u8>> {
         return None;
     }
 
-    let version = if samples.iter().any(|s| s.cts_offset < 0) { 1u8 } else { 0u8 };
+    let version = if samples.iter().any(|s| s.cts_offset < 0) {
+        1u8
+    } else {
+        0u8
+    };
     let mut entries: Vec<(u32, i32)> = Vec::new();
 
     for sample in samples {
@@ -923,7 +951,13 @@ fn build_mdia(track: &Mp4SegmentTrack, timescale: u32, duration: u32, mdat_start
 fn build_trak(track: &Mp4SegmentTrack, timescale: u32, duration: u32, mdat_start: u64) -> Vec<u8> {
     let mut payload = Vec::new();
     let is_audio = track.handler_type == *b"soun";
-    payload.extend_from_slice(&build_tkhd(track.track_id, duration, track.width, track.height, is_audio));
+    payload.extend_from_slice(&build_tkhd(
+        track.track_id,
+        duration,
+        track.width,
+        track.height,
+        is_audio,
+    ));
     payload.extend_from_slice(&build_mdia(track, timescale, duration, mdat_start));
     make_mp4_box(b"trak", payload)
 }
@@ -1018,7 +1052,11 @@ pub fn split_mp4_segment(
     }
 
     let mut timeline_map: HashMap<usize, (i64, i64, Option<u32>)> = HashMap::new();
-    for tp in result.video_timeline.iter().chain(result.audio_timeline.iter()) {
+    for tp in result
+        .video_timeline
+        .iter()
+        .chain(result.audio_timeline.iter())
+    {
         let dts_ms = (tp.dts * 1000.0).round() as i64;
         let pts_ms = (tp.pts * 1000.0).round() as i64;
         let duration_ms = tp.duration.map(|d| (d * 1000.0).round() as u32);
@@ -1055,10 +1093,8 @@ pub fn split_mp4_segment(
         let desc_idx = mp4_info.sample_desc_index.unwrap_or(1);
         track_desc.entry(mp4_info.track_id).or_insert(desc_idx);
 
-        let (dts_ms, pts_ms, duration_ms) = timeline_map
-            .get(&tag.index)
-            .cloned()
-            .unwrap_or_else(|| {
+        let (dts_ms, pts_ms, duration_ms) =
+            timeline_map.get(&tag.index).cloned().unwrap_or_else(|| {
                 let ts_ms = tag.timestamp as i64;
                 (ts_ms, ts_ms, None)
             });
@@ -1181,7 +1217,11 @@ pub fn split_mp4_segment(
     let timescale = 1000u32;
 
     let moov_placeholder = build_moov(&tracks, timescale, 0);
-    let mdat_header_size = if (mdat_data.len() as u64 + 8) <= u32::MAX as u64 { 8 } else { 16 };
+    let mdat_header_size = if (mdat_data.len() as u64 + 8) <= u32::MAX as u64 {
+        8
+    } else {
+        16
+    };
     let mdat_start = (ftyp.len() + moov_placeholder.len() + mdat_header_size) as u64;
     let moov = build_moov(&tracks, timescale, mdat_start);
 
@@ -1202,4 +1242,254 @@ pub fn get_segment_info(result_json: &str) -> Result<JsValue, JsError> {
     let segments = compute_segments(&result);
 
     serde_wasm_bindgen::to_value(&segments).map_err(|e| JsError::new(&format!("序列化失败: {}", e)))
+}
+
+/// MP4 流式分割 - 使用缓存的解析结果进行分段导出
+/// 适用于大文件流式模式，不需要前端传递完整的 tags 列表
+#[wasm_bindgen(js_name = splitMp4SegmentStreaming)]
+pub fn split_mp4_segment_streaming(
+    file_id: &str,
+    file_data: &[u8],
+    segment_index: usize,
+) -> Result<Uint8Array, JsError> {
+    use crate::cache::RESULT_CACHE;
+
+    web_sys::console::log_1(
+        &format!(
+            "[split_mp4_segment_streaming] 请求: file_id='{}', file_data_len={}, segment_index={}",
+            file_id,
+            file_data.len(),
+            segment_index
+        )
+        .into(),
+    );
+
+    // 从缓存获取完整的解析结果
+    let cache = RESULT_CACHE.lock().unwrap();
+
+    // 列出所有缓存的键
+    let cached_keys: Vec<String> = cache.keys().cloned().collect();
+    web_sys::console::log_1(
+        &format!(
+            "[split_mp4_segment_streaming] 缓存中的所有 fileId: {:?}",
+            cached_keys
+        )
+        .into(),
+    );
+
+    let result = cache.get(file_id).ok_or_else(|| {
+        let err_msg = format!(
+            "未找到缓存的解析结果: {} (缓存中有 {} 个条目)",
+            file_id,
+            cache.len()
+        );
+        web_sys::console::error_1(&err_msg.clone().into());
+        JsError::new(&err_msg)
+    })?;
+
+    web_sys::console::log_1(
+        &format!(
+            "[split_mp4_segment_streaming] 找到缓存结果: tags_count={}, has_segments={}",
+            result.tags.len(),
+            result.segments.is_some()
+        )
+        .into(),
+    );
+
+    let segments = result
+        .segments
+        .as_ref()
+        .ok_or_else(|| JsError::new("文件没有分段信息"))?;
+
+    let segment = segments
+        .segments
+        .get(segment_index)
+        .ok_or_else(|| JsError::new(&format!("分段索引 {} 超出范围", segment_index)))?;
+
+    let track_infos = extract_mp4_track_infos(file_data)?;
+    let mut track_info_map: HashMap<u32, Mp4TrackInfo> = HashMap::new();
+    for info in track_infos {
+        track_info_map.insert(info.track_id, info);
+    }
+
+    let mut timeline_map: HashMap<usize, (i64, i64, Option<u32>)> = HashMap::new();
+    for tp in result
+        .video_timeline
+        .iter()
+        .chain(result.audio_timeline.iter())
+    {
+        let dts_ms = (tp.dts * 1000.0).round() as i64;
+        let pts_ms = (tp.pts * 1000.0).round() as i64;
+        let duration_ms = tp.duration.map(|d| (d * 1000.0).round() as u32);
+        timeline_map.insert(tp.index, (dts_ms, pts_ms, duration_ms));
+    }
+
+    #[derive(Clone)]
+    struct SampleMeta {
+        sample_index: u32,
+        offset: u64,
+        size: u32,
+        dts_ms: i64,
+        pts_ms: i64,
+        duration_ms: Option<u32>,
+        is_sync: bool,
+        sample_desc_index: u32,
+    }
+
+    let mut track_samples: HashMap<u32, Vec<SampleMeta>> = HashMap::new();
+    let mut track_desc: HashMap<u32, u32> = HashMap::new();
+
+    for tag in &result.tags {
+        if tag.index < segment.start_tag_index || tag.index > segment.end_tag_index {
+            continue;
+        }
+        if tag.tag_type != "video" && tag.tag_type != "audio" {
+            continue;
+        }
+        let mp4_info = match &tag.mp4_info {
+            Some(info) => info,
+            None => continue,
+        };
+
+        let desc_idx = mp4_info.sample_desc_index.unwrap_or(1);
+        track_desc.entry(mp4_info.track_id).or_insert(desc_idx);
+
+        let (dts_ms, pts_ms, duration_ms) =
+            timeline_map.get(&tag.index).cloned().unwrap_or_else(|| {
+                let ts_ms = tag.timestamp as i64;
+                (ts_ms, ts_ms, None)
+            });
+
+        track_samples
+            .entry(mp4_info.track_id)
+            .or_default()
+            .push(SampleMeta {
+                sample_index: mp4_info.sample_index,
+                offset: tag.offset,
+                size: tag.size,
+                dts_ms,
+                pts_ms,
+                duration_ms,
+                is_sync: tag.is_keyframe,
+                sample_desc_index: desc_idx,
+            });
+    }
+
+    if track_samples.is_empty() {
+        return Err(JsError::new("分段内没有可导出的采样"));
+    }
+
+    let mut tracks: Vec<Mp4SegmentTrack> = Vec::new();
+
+    for (track_id, mut samples) in track_samples {
+        let info = track_info_map
+            .get(&track_id)
+            .ok_or_else(|| JsError::new(&format!("缺少轨道 {} 的 stsd 信息", track_id)))?;
+
+        samples.sort_by_key(|s| s.sample_index);
+
+        for i in 0..samples.len() {
+            if samples[i].duration_ms.is_some() {
+                continue;
+            }
+
+            let mut duration = if i + 1 < samples.len() {
+                samples[i + 1].dts_ms - samples[i].dts_ms
+            } else if i > 0 {
+                samples[i - 1].duration_ms.unwrap_or(33) as i64
+            } else {
+                33
+            };
+
+            if duration <= 0 {
+                duration = 33;
+            }
+
+            samples[i].duration_ms = Some(duration as u32);
+        }
+
+        let desc_idx = track_desc.get(&track_id).copied().unwrap_or(1);
+        let entry_idx = desc_idx.saturating_sub(1) as usize;
+        let stsd_entry = info
+            .stsd_entries
+            .get(entry_idx)
+            .or_else(|| info.stsd_entries.first())
+            .cloned()
+            .ok_or_else(|| JsError::new("stsd entry 缺失"))?;
+
+        let mut segment_samples = Vec::new();
+        for sample in samples {
+            let start = sample.offset as usize;
+            let end = start.saturating_add(sample.size as usize);
+            if end > file_data.len() {
+                return Err(JsError::new("采样数据超出文件范围"));
+            }
+            let data = file_data[start..end].to_vec();
+            let duration = sample.duration_ms.unwrap_or(33);
+            let cts_offset = (sample.pts_ms - sample.dts_ms) as i32;
+            segment_samples.push(Mp4SegmentSample {
+                data,
+                duration,
+                cts_offset,
+                is_sync: sample.is_sync,
+            });
+        }
+
+        if segment_samples.is_empty() {
+            continue;
+        }
+
+        tracks.push(Mp4SegmentTrack {
+            track_id,
+            handler_type: info.handler_type,
+            width: info.width,
+            height: info.height,
+            stsd_entry,
+            samples: segment_samples,
+            offsets: Vec::new(),
+        });
+    }
+
+    if tracks.is_empty() {
+        return Err(JsError::new("没有可导出的轨道"));
+    }
+
+    tracks.sort_by_key(|t| {
+        if t.handler_type == *b"vide" {
+            0
+        } else if t.handler_type == *b"soun" {
+            1
+        } else {
+            2
+        }
+    });
+
+    let mut mdat_data = Vec::new();
+    for track in &mut tracks {
+        let mut offsets = Vec::with_capacity(track.samples.len());
+        for sample in &track.samples {
+            offsets.push(mdat_data.len() as u64);
+            mdat_data.extend_from_slice(&sample.data);
+        }
+        track.offsets = offsets;
+    }
+
+    let ftyp = extract_ftyp_box(file_data).unwrap_or_else(build_default_ftyp);
+    let timescale = 1000u32;
+
+    let moov_placeholder = build_moov(&tracks, timescale, 0);
+    let mdat_header_size = if (mdat_data.len() as u64 + 8) <= u32::MAX as u64 {
+        8
+    } else {
+        16
+    };
+    let mdat_start = (ftyp.len() + moov_placeholder.len() + mdat_header_size) as u64;
+    let moov = build_moov(&tracks, timescale, mdat_start);
+
+    let mut output = Vec::new();
+    output.extend_from_slice(&ftyp);
+    output.extend_from_slice(&moov);
+    output.extend_from_slice(&write_mdat_box(&mdat_data));
+
+    Ok(Uint8Array::from(output.as_slice()))
 }

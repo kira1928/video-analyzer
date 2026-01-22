@@ -9,6 +9,9 @@ import '../styles/GopPlayer.css';
 interface GopPlayerProps {
   fileId: string;
   gop: Gop;
+  gops?: Gop[];
+  currentGopListIndex?: number;
+  preloadGopCount?: number;
   fileData: Uint8Array | null;
   analysisResult: AnalysisResult;
   onClose: () => void;
@@ -27,6 +30,38 @@ interface FrameThumbnail {
   timestamp: number;
   isKeyframe: boolean;
   imageData: string; // base64 data URL
+}
+
+interface DecodeChunk {
+  data: ArrayBuffer;
+  timestamp: number;
+  duration: number;
+  type: EncodedVideoChunkType;
+  tagIndex: number;
+  timestampMs: number;
+  isKeyframe: boolean;
+}
+
+interface WorkerFrameMessage {
+  type: 'frame';
+  jobId: number;
+  frameIndex: number;
+  tagIndex: number;
+  timestampMs: number;
+  isKeyframe: boolean;
+  thumbBlob: Blob;
+  frameBlob: Blob;
+}
+
+interface WorkerDoneMessage {
+  type: 'done';
+  jobId: number;
+}
+
+interface WorkerErrorMessage {
+  type: 'error';
+  jobId: number;
+  error: string;
 }
 
 const AAC_SAMPLE_RATES = [
@@ -50,9 +85,32 @@ function parseAacConfig(description?: Uint8Array) {
   };
 }
 
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+function trimLeadingNonKeyframes(tags: TagSummary[]) {
+  const firstKeyIndex = tags.findIndex(tag => tag.isKeyframe);
+  if (firstKeyIndex === -1) {
+    return { tags: [] as TagSummary[], skipped: tags.length };
+  }
+  if (firstKeyIndex === 0) {
+    return { tags, skipped: 0 };
+  }
+  return { tags: tags.slice(firstKeyIndex), skipped: firstKeyIndex };
+}
+
 export function GopPlayer({
   fileId,
   gop,
+  gops,
+  currentGopListIndex,
+  preloadGopCount = 2,
   fileData,
   analysisResult,
   onClose,
@@ -102,6 +160,16 @@ export function GopPlayer({
   const currentDisplayTagRef = useRef<number | null>(null);
   const autoPlayStartRef = useRef(false);
   const hasLoadedGopTagsRef = useRef(false);
+  const decoderWorkerRef = useRef<Worker | null>(null);
+  const decoderJobIdRef = useRef(0);
+  const activeJobRef = useRef<number | null>(null);
+  const workerJobIdRef = useRef<number | null>(null);
+  const jobInfoRef = useRef<Map<number, { mode: 'active' | 'predecode' }>>(new Map());
+  const predecodeQueueRef = useRef<Gop[]>([]);
+  const startPredecodeRef = useRef<(gopTarget: Gop) => Promise<void>>(async () => { });
+  const fileIdRef = useRef(fileId);
+  const selectedThumbnailRef = useRef<number | null>(null);
+  const initialTagIndexRef = useRef<number | undefined>(initialTagIndex);
   const formatLower = (analysisResult.format || '').toLowerCase();
 
   const drawImageToCanvas = useCallback((src: string, revoke: boolean = false) => {
@@ -157,6 +225,13 @@ export function GopPlayer({
     drawImageToCanvas(thumbData);
   }, [drawImageToCanvas]);
 
+  const updateThumbnailState = useCallback((frameIndex: number, thumb: FrameThumbnail) => {
+    const next = thumbnailsRef.current.slice();
+    next[frameIndex] = thumb;
+    thumbnailsRef.current = next;
+    setThumbnails(next);
+  }, []);
+
   const drawFrameFromCache = useCallback(async (
     tagIndex: number,
     index: number,
@@ -186,7 +261,7 @@ export function GopPlayer({
     }
   }, [autoPlayStart]);
 
-  // 自动滚动到选中的帧
+  // 自动滚动到选中缩略图
   useEffect(() => {
     if (selectedThumbnail !== null && galleryRef.current) {
       const el = document.getElementById(`thumb-${selectedThumbnail}`);
@@ -197,7 +272,7 @@ export function GopPlayer({
   }, [selectedThumbnail]);
 
   // 加载当前 GOP 的 Tag 列表（流式模式从 WASM 缓存拉取）
-  // 注意：依赖数组只使用稳定的原始类型（字符串、数字、布尔），避免对象引用变化导致无限循环
+  // 注意：依赖数据使用稳定的原始类型，避免对象引用变化导致无限循环
   useEffect(() => {
     let cancelled = false;
     hasLoadedGopTagsRef.current = false;
@@ -207,6 +282,7 @@ export function GopPlayer({
       setError(null);
       setIsDecoding(true);
       setThumbnails([]);
+      thumbnailsRef.current = [];
       setSelectedThumbnail(null);
       setCurrentFrame(0);
       setGopTags([]);
@@ -220,7 +296,6 @@ export function GopPlayer({
           const count = Math.max(0, gop.endIndex - gop.startIndex + 1);
           tags = count > 0 ? await wasmWorker.getSamplesBatch(fileId, gop.startIndex, count) : [];
         } else {
-          // 非流式模式：从 analysisResult.tags 中筛选当前 GOP 的 tags
           tags = analysisResult.tags.filter(
             t => t.index >= gop.startIndex && t.index <= gop.endIndex
           );
@@ -247,20 +322,9 @@ export function GopPlayer({
     return () => {
       cancelled = true;
     };
-    // 重要：只依赖稳定的属性，不依赖 analysisResult.tags 数组本身（引用会变化）
+    // 重要：只依赖稳定的属性，不依赖 analysisResult.tags 数组本身
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileId, gop.startIndex, gop.endIndex, gop.index, isStreamingMode]);
-
-
-
-  // ESC 关闭
-  useEffect(() => {
-    const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleEsc);
-    return () => window.removeEventListener('keydown', handleEsc);
-  }, [onClose]);
 
   // 点击缩略图
   const handleThumbnailClick = useCallback(async (tagIndex: number, index: number) => {
@@ -298,6 +362,414 @@ export function GopPlayer({
     }
   }, [drawFrameFromCache, isPlaying]);
 
+  const buildVideoDecoderConfig = useCallback(async (tags: TagSummary[]) => {
+    const wasm = getWasmModule();
+    let codec = 'avc1.64001f';
+    let description: Uint8Array | undefined;
+    let isAnnexB = false;
+    const isMP4OrTS = formatLower === 'mp4' || formatLower === 'ts';
+
+    const isStreamingFlv = !isMP4OrTS && !fileData;
+
+    if (isMP4OrTS) {
+      const firstVideoTag = tags[0];
+      const sampleDescIndex = firstVideoTag?.mp4Info?.sampleDescIndex ?? 1;
+      let initData: Uint8Array | undefined;
+
+      if (analysisResult.videoInitDataList &&
+        analysisResult.videoInitDataList.length >= sampleDescIndex &&
+        sampleDescIndex >= 1) {
+        const configData = analysisResult.videoInitDataList[sampleDescIndex - 1];
+        if (configData && configData.length > 0) {
+          initData = new Uint8Array(configData);
+        }
+      }
+
+      if (!initData) {
+        if (!analysisResult.videoInitData || analysisResult.videoInitData.length === 0) {
+          throw new Error('MP4/TS 文件缺少视频初始化数据 (videoInitData)');
+        }
+        initData = new Uint8Array(analysisResult.videoInitData);
+      }
+
+      description = initData;
+
+      const codecId = firstVideoTag?.codecId;
+      const isHEVC = codecId === 12;
+      if (isHEVC) {
+        try {
+          codec = wasm.generateHEVCCodecString(initData, "raw", "concat");
+        } catch {
+          codec = 'hvc1.1.6.L93.B0';
+        }
+      } else {
+        if (initData.length >= 4 && initData[0] === 0x01) {
+          const profile = initData[1];
+          const compat = initData[2];
+          const level = initData[3];
+          codec = `avc1.${profile.toString(16).padStart(2, '0')}${compat.toString(16).padStart(2, '0')}${level.toString(16).padStart(2, '0')}`;
+        } else {
+          codec = 'avc1.64001f';
+        }
+      }
+    } else {
+      let codecId = tags[0]?.codecId ?? 7;
+      let configData: Uint8Array | undefined;
+
+      if (isStreamingFlv) {
+        if (!analysisResult.videoInitData || analysisResult.videoInitData.length === 0) {
+          throw new Error('流式模式下缺少视频初始化数据');
+        }
+        configData = new Uint8Array(analysisResult.videoInitData);
+      } else {
+        const seqHeaderTag = analysisResult.tags.find(t => t.type === 'video' && t.isSeqHeader);
+        if (!seqHeaderTag) {
+          throw new Error('未找到视频 Sequence Header');
+        }
+
+        const seqHeaderOffset = seqHeaderTag.offset + 11;
+        const seqHeaderData = fileData!.subarray(seqHeaderOffset, seqHeaderOffset + seqHeaderTag.size);
+        codecId = seqHeaderData[0] & 0x0f;
+        configData = seqHeaderData.subarray(5);
+      }
+
+      if (codecId === 12) {
+        const isAnnexBConfig = wasm.isAnnexBFormat(configData!);
+        if (isAnnexBConfig) {
+          isAnnexB = true;
+          try {
+            const hvccData = wasm.convertAnnexBToHVCC(configData!);
+            codec = 'hvc1.1.6.L93.B0';
+            description = hvccData;
+          } catch {
+            codec = 'hvc1.1.6.L93.B0';
+            description = configData;
+          }
+        } else {
+          try {
+            codec = wasm.generateHEVCCodecString(configData!, "raw", "concat");
+            description = configData;
+          } catch {
+            codec = 'hvc1.1.6.L93.B0';
+            description = configData;
+          }
+        }
+      } else if (codecId === 7) {
+        description = configData;
+        codec = 'avc1.64001f';
+      }
+    }
+
+    const config: VideoDecoderConfig = {
+      codec,
+      description,
+    };
+
+    const support = await VideoDecoder.isConfigSupported(config);
+    if (!support.supported) {
+      throw new Error(`不支持的视频配置: ${codec}`);
+    }
+
+    return { config, isAnnexB };
+  }, [analysisResult, fileData, formatLower]);
+
+  const buildEncodedChunks = useCallback(async (
+    tags: TagSummary[],
+    isAnnexB: boolean,
+    signal: AbortSignal
+  ): Promise<DecodeChunk[]> => {
+    const wasm = getWasmModule();
+    const isMP4OrTS = formatLower === 'mp4' || formatLower === 'ts';
+    const flvTagDataCache = new Map<number, Uint8Array>();
+    const getFlvTagData = async (tag: TagSummary) => {
+      const cached = flvTagDataCache.get(tag.index);
+      if (cached) return cached;
+      let data: Uint8Array;
+      if (fileData) {
+        const tagDataOffset = tag.offset + 11;
+        data = fileData.subarray(tagDataOffset, tagDataOffset + tag.size);
+      } else {
+        data = await wasmWorker.readSampleData(fileId, tag.index);
+      }
+      flvTagDataCache.set(tag.index, data);
+      return data;
+    };
+    const chunks: DecodeChunk[] = [];
+    const timelineMap = new Map(analysisResult.videoTimeline.map(p => [p.index, p]));
+
+    const defaultDurationUs = 33333;
+    let frameMetaMap: Map<number, { pts: number; duration: number }> | null = null;
+    if (!isMP4OrTS) {
+      const ptsList: { index: number; pts: number }[] = [];
+      for (const tag of tags) {
+        const p = await getFlvTagData(tag);
+        if (p.length < 5) continue;
+        if (p[1] !== 1) continue;
+        const cts = (p[2] << 16) | (p[3] << 8) | p[4];
+        const pts = (tag.timestamp + cts) * 1000;
+        ptsList.push({ index: tag.index, pts });
+      }
+
+      ptsList.sort((a, b) => a.pts - b.pts);
+      const basePts = ptsList.length > 0 ? ptsList[0].pts : 0;
+      frameMetaMap = new Map<number, { pts: number; duration: number }>();
+      for (let i = 0; i < ptsList.length; i++) {
+        const current = ptsList[i];
+        const normalizedPts = current.pts - basePts;
+        let duration = defaultDurationUs;
+        if (i < ptsList.length - 1) {
+          duration = ptsList[i + 1].pts - current.pts;
+        } else if (i > 0) {
+          duration = current.pts - ptsList[i - 1].pts;
+        }
+        if (duration <= 0) duration = defaultDurationUs;
+        frameMetaMap.set(current.index, { pts: normalizedPts, duration });
+      }
+    }
+
+    for (let frameIndex = 0; frameIndex < tags.length; frameIndex++) {
+      if (signal.aborted) break;
+      const tag = tags[frameIndex];
+      let naluData: Uint8Array;
+      let pts: number;
+      let duration: number;
+
+      if (isMP4OrTS) {
+        if (fileData) {
+          naluData = fileData.subarray(tag.offset, tag.offset + tag.size);
+        } else {
+          naluData = await wasmWorker.readSampleData(fileId, tag.index);
+        }
+        const timelinePoint = timelineMap.get(tag.index);
+        pts = timelinePoint ? timelinePoint.pts * 1000 * 1000 : tag.timestamp * 1000;
+        duration = defaultDurationUs;
+        if (timelinePoint?.duration && timelinePoint.duration > 0) {
+          duration = timelinePoint.duration * 1000 * 1000;
+        } else if (frameIndex < tags.length - 1) {
+          const deltaMs = tags[frameIndex + 1].timestamp - tag.timestamp;
+          if (deltaMs > 0) {
+            duration = deltaMs * 1000;
+          }
+        }
+        if (duration <= 0) duration = defaultDurationUs;
+      } else {
+        const videoTagData = await getFlvTagData(tag);
+        if (videoTagData.length < 5) continue;
+        const codecId = videoTagData[0] & 0x0f;
+        const avcPacketType = videoTagData[1];
+        if (avcPacketType !== 1) {
+          continue;
+        }
+        const meta = frameMetaMap?.get(tag.index);
+        const cts = (videoTagData[2] << 16) | (videoTagData[3] << 8) | videoTagData[4];
+        pts = meta ? meta.pts : (tag.timestamp + cts) * 1000;
+        duration = meta ? meta.duration : defaultDurationUs;
+        naluData = videoTagData.subarray(5);
+        if (codecId === 12 && isAnnexB) {
+          if (wasm.isAnnexBFormat(naluData)) {
+            naluData = wasm.convertAnnexBToAVCC(naluData);
+          }
+        }
+      }
+
+      const isKey = tag.isKeyframe;
+      const data = naluData.slice().buffer;
+      chunks.push({
+        data,
+        timestamp: pts,
+        duration,
+        type: isKey ? 'key' : 'delta',
+        tagIndex: tag.index,
+        timestampMs: tag.timestamp,
+        isKeyframe: tag.isKeyframe
+      });
+    }
+
+    return chunks;
+  }, [analysisResult.videoTimeline, fileData, fileId, formatLower]);
+
+  const cancelWorkerJob = useCallback(() => {
+    const worker = decoderWorkerRef.current;
+    const jobId = workerJobIdRef.current;
+    if (!worker || jobId === null) return;
+    worker.postMessage({ action: 'cancel', payload: { jobId } });
+    workerJobIdRef.current = null;
+    if (activeJobRef.current === jobId) {
+      activeJobRef.current = null;
+    }
+    jobInfoRef.current.delete(jobId);
+  }, []);
+
+  const startWorkerDecode = useCallback(async (
+    mode: 'active' | 'predecode',
+    tags: TagSummary[],
+    config: VideoDecoderConfig,
+    isAnnexB: boolean,
+    signal: AbortSignal
+  ) => {
+    const worker = decoderWorkerRef.current;
+    if (!worker || tags.length === 0) return;
+
+    const chunks = await buildEncodedChunks(tags, isAnnexB, signal);
+    if (signal.aborted || chunks.length === 0) return;
+
+    const jobId = ++decoderJobIdRef.current;
+    jobInfoRef.current.set(jobId, { mode });
+    workerJobIdRef.current = jobId;
+    if (mode === 'active') {
+      activeJobRef.current = jobId;
+      setIsDecoding(true);
+    }
+
+    const transferables = chunks.map(chunk => chunk.data);
+    worker.postMessage({
+      action: 'decode',
+      payload: {
+        jobId,
+        config,
+        chunks,
+        thumbSize: 80,
+        thumbQuality: 0.6,
+        frameQuality: 0.8,
+        maxCacheWidth: 1280
+      }
+    }, transferables);
+  }, [buildEncodedChunks]);
+
+  const loadGopTagsFor = useCallback(async (targetGop: Gop): Promise<TagSummary[]> => {
+    if (isStreamingMode) {
+      const count = Math.max(0, targetGop.endIndex - targetGop.startIndex + 1);
+      return count > 0 ? await wasmWorker.getSamplesBatch(fileId, targetGop.startIndex, count) : [];
+    }
+    return analysisResult.tags.filter(
+      t => t.index >= targetGop.startIndex && t.index <= targetGop.endIndex
+    );
+  }, [analysisResult.tags, fileId, isStreamingMode]);
+
+  const startPredecode = useCallback(async (targetGop: Gop) => {
+    try {
+      const tags = await loadGopTagsFor(targetGop);
+      if (tags.length === 0) return;
+      const videoTags = tags.filter(t => t.type === 'video' && !t.isSeqHeader);
+      const { tags: normalizedTags } = trimLeadingNonKeyframes(videoTags);
+      if (normalizedTags.length === 0) return;
+      const { config, isAnnexB } = await buildVideoDecoderConfig(normalizedTags);
+      const controller = new AbortController();
+      await startWorkerDecode('predecode', normalizedTags, config, isAnnexB, controller.signal);
+    } catch (e) {
+      console.warn('预解码失败:', e);
+    }
+  }, [buildVideoDecoderConfig, loadGopTagsFor, startWorkerDecode]);
+
+  useEffect(() => {
+    fileIdRef.current = fileId;
+  }, [fileId]);
+
+  useEffect(() => {
+    selectedThumbnailRef.current = selectedThumbnail;
+  }, [selectedThumbnail]);
+
+  useEffect(() => {
+    initialTagIndexRef.current = initialTagIndex;
+  }, [initialTagIndex]);
+
+  useEffect(() => {
+    startPredecodeRef.current = startPredecode;
+  }, [startPredecode]);
+
+  useEffect(() => {
+    const worker = new Worker(
+      new URL('../workers/gopDecoder.worker.ts', import.meta.url),
+      { type: 'module' }
+    );
+    decoderWorkerRef.current = worker;
+
+    const handleMessage = async (event: MessageEvent) => {
+      const data = event.data as WorkerFrameMessage | WorkerDoneMessage | WorkerErrorMessage;
+      if (!data || !('type' in data)) return;
+
+      if (data.type === 'frame') {
+        const jobInfo = jobInfoRef.current.get(data.jobId);
+        if (!jobInfo) return;
+
+        try {
+          const imageData = await blobToDataUrl(data.thumbBlob);
+          if (jobInfo.mode === 'predecode') {
+            void saveFrame(fileIdRef.current, data.tagIndex, data.frameBlob, imageData);
+            return;
+          }
+
+          const thumb: FrameThumbnail = {
+            tagIndex: data.tagIndex,
+            timestamp: data.timestampMs,
+            isKeyframe: data.isKeyframe,
+            imageData
+          };
+
+          updateThumbnailState(data.frameIndex, thumb);
+
+          void saveFrame(fileIdRef.current, data.tagIndex, data.frameBlob, imageData);
+
+          if (data.frameIndex === 0) {
+            try {
+              const bmp = await createImageBitmap(data.frameBlob);
+              setIsVertical(bmp.height > bmp.width);
+              bmp.close();
+            } catch { }
+          }
+
+          if (currentDisplayTagRef.current === null && data.frameIndex === 0) {
+            drawThumbnailToCanvas(thumb, data.tagIndex);
+            setSelectedThumbnail(0);
+            setCurrentFrame(1);
+          }
+        } catch (e) {
+          console.error('处理解码帧失败:', e);
+        }
+        return;
+      }
+
+      if (data.type === 'done') {
+        const jobInfo = jobInfoRef.current.get(data.jobId);
+        if (!jobInfo) return;
+        jobInfoRef.current.delete(data.jobId);
+        if (activeJobRef.current === data.jobId) {
+          activeJobRef.current = null;
+        }
+        workerJobIdRef.current = null;
+        if (jobInfo.mode === 'active') {
+          setIsDecoding(false);
+        }
+
+        if (autoPlayStartRef.current && thumbnailsRef.current.length > 0) {
+          autoPlayStartRef.current = false;
+          setIsPlaying(true);
+        }
+
+        if (predecodeQueueRef.current.length > 0) {
+          const next = predecodeQueueRef.current.shift();
+          if (next) {
+            void startPredecodeRef.current(next);
+          }
+        }
+        return;
+      }
+
+      if (data.type === 'error') {
+        console.error(`解码工作失败: ${data.error}`);
+        setError(data.error);
+        setIsDecoding(false);
+      }
+    };
+
+    worker.addEventListener('message', handleMessage);
+    return () => {
+      worker.removeEventListener('message', handleMessage);
+      worker.terminate();
+      decoderWorkerRef.current = null;
+    };
+  }, [drawThumbnailToCanvas, updateThumbnailState]);
+
 
   // 创建缩略图
   const createThumbnail = useCallback((frame: VideoFrame, tagIndex: number, timestamp: number, isKeyframe: boolean): FrameThumbnail => {
@@ -316,13 +788,12 @@ export function GopPlayer({
       imageData: thumbCanvas.toDataURL('image/jpeg', 0.6)
     };
   }, []);
-
+  // 键盘导航
   // 切换播放/暂停
   const togglePlay = useCallback(() => {
     setIsPlaying(p => !p);
   }, []);
 
-  // 键盘导航
   const navigateFrame = useCallback((offset: number) => {
     if (thumbnails.length === 0) return;
 
@@ -381,7 +852,8 @@ export function GopPlayer({
 
   // 播放控制循环
   useEffect(() => {
-    if (!isPlaying || thumbnails.length === 0) {
+    const playbackThumbs = thumbnails.filter(Boolean) as FrameThumbnail[];
+    if (!isPlaying || playbackThumbs.length === 0) {
       if (playTimerRef.current) {
         clearTimeout(playTimerRef.current);
         playTimerRef.current = null;
@@ -389,9 +861,13 @@ export function GopPlayer({
       return;
     }
 
-    let currentIndex = selectedThumbnail ?? 0;
-    // 如果已经在最后，重头开始
-    if (currentIndex >= thumbnails.length - 1) {
+    let currentIndex = 0;
+    if (selectedThumbnail !== null) {
+      const currentTagIndex = thumbnails[selectedThumbnail]?.tagIndex;
+      const foundIndex = playbackThumbs.findIndex(t => t.tagIndex === currentTagIndex);
+      currentIndex = foundIndex >= 0 ? foundIndex : 0;
+    }
+    if (currentIndex >= playbackThumbs.length - 1) {
       currentIndex = 0;
     }
 
@@ -405,8 +881,8 @@ export function GopPlayer({
         source.buffer = audioBufferRef.current;
         source.connect(ctx.destination);
 
-        const startTime = thumbnails[0].timestamp;
-        const currentTime = thumbnails[currentIndex].timestamp;
+        const startTime = playbackThumbs[0].timestamp;
+        const currentTime = playbackThumbs[currentIndex].timestamp;
         const offset = Math.max(0, (currentTime - startTime) / 1000);
 
         source.start(0, offset);
@@ -417,7 +893,7 @@ export function GopPlayer({
     }
 
     const playNext = async () => {
-      if (currentIndex >= thumbnails.length) {
+      if (currentIndex >= playbackThumbs.length) {
         setIsPlaying(false);
         if (autoPlayNext && onNextGop) {
           console.log("Auto-playing next GOP...");
@@ -426,9 +902,15 @@ export function GopPlayer({
         return;
       }
 
-      const thumb = thumbnails[currentIndex];
+      const thumb = playbackThumbs[currentIndex];
+      if (!thumb) {
+        currentIndex++;
+        playNext();
+        return;
+      }
       // 2. 设置选中状态 & 绘制
-      setSelectedThumbnail(currentIndex);
+      const originalIndex = thumbnails.findIndex(t => t?.tagIndex === thumb.tagIndex);
+      setSelectedThumbnail(originalIndex >= 0 ? originalIndex : currentIndex);
       setCurrentFrame(currentIndex + 1);
 
       try {
@@ -440,8 +922,8 @@ export function GopPlayer({
 
       // 3. 计算下一帧间隔
       let durationMs = 33; // default
-      if (currentIndex < thumbnails.length - 1) {
-        const nextThumb = thumbnails[currentIndex + 1];
+      if (currentIndex < playbackThumbs.length - 1) {
+        const nextThumb = playbackThumbs[currentIndex + 1];
         durationMs = (nextThumb.timestamp - thumb.timestamp);
       }
 
@@ -465,7 +947,7 @@ export function GopPlayer({
         audioSourceRef.current = null;
       }
     };
-  }, [isPlaying, thumbnails, drawFrameFromCache]); // selectedThumbnail 只在初始读取，循环内自己维护 currentIndex
+  }, [isPlaying, thumbnails, drawFrameFromCache, selectedThumbnail]); // selectedThumbnail 只在初始读取，循环内自己维护 currentIndex
 
   // 初始化解码器和数据
   useEffect(() => {
@@ -480,19 +962,32 @@ export function GopPlayer({
     const controller = new AbortController();
     const signal = controller.signal;
 
+    cancelWorkerJob();
+    predecodeQueueRef.current = [];
+
     // 重置状态
     setIsPlaying(false);
     setThumbnails([]);
+    thumbnailsRef.current = [];
     setIsFrameHiResReady(false);
     currentDisplayTagRef.current = null;
-    tagsRef.current = gopVideoTags;
-    setTotalFrames(gopVideoTags.length);
+    const { tags: videoTagsForDecode, skipped: skippedFrames } = trimLeadingNonKeyframes(gopVideoTags);
+    tagsRef.current = videoTagsForDecode;
+    setTotalFrames(videoTagsForDecode.length);
     if (gopVideoTags.length === 0) {
       if (hasLoadedGopTagsRef.current) {
         setError("该 GOP 没有视频帧");
       }
       setIsDecoding(false);
       return;
+    }
+    if (videoTagsForDecode.length === 0) {
+      setError("该 GOP 缺少关键帧，无法解码");
+      setIsDecoding(false);
+      return;
+    }
+    if (skippedFrames > 0) {
+      console.warn(`Skipping ${skippedFrames} leading non-key frames for decode.`);
     }
 
     const initDecoder = async () => {
@@ -507,10 +1002,10 @@ export function GopPlayer({
         // 1. 尝试从缓存完全恢复
         // 注意：大文件流式模式下跳过缓存检查（避免为每个帧查询 IndexedDB）
         // GOP 通常只有几十帧，这里的缓存检查是可行的
-        if (!isStreamingMode && gopVideoTags.length <= 300) {
+        if (videoTagsForDecode.length <= 300) {
           try {
             const { loadCachedFramesBatch } = await import('../utils/gopCache');
-            const cachedFrames = await loadCachedFramesBatch(fileId, gopVideoTags.map(t => t.index));
+            const cachedFrames = await loadCachedFramesBatch(fileId, videoTagsForDecode.map(t => t.index));
 
             if (cachedFrames.every(f => f !== null)) {
               console.log("🔥 GOP 缓存命中，跳过视频解码");
@@ -518,7 +1013,7 @@ export function GopPlayer({
 
               await Promise.all(cachedFrames.map(async (frame, i) => {
                 if (!frame) return;
-                const tag = gopVideoTags[i];
+                const tag = videoTagsForDecode[i];
                 let imageData = frame.thumbnail;
 
                 if (!imageData) {
@@ -567,218 +1062,25 @@ export function GopPlayer({
           }
         }
 
+        if (gops && typeof currentGopListIndex === 'number' && preloadGopCount > 0) {
+          predecodeQueueRef.current = gops.slice(
+            currentGopListIndex + 1,
+            currentGopListIndex + 1 + preloadGopCount
+          );
+        }
+
         if (!skipVideoDecode) {
-          // 清除之前的状态引用
           isAnnexBRef.current = false;
-
-          let codec = 'avc1.64001f';
-          let description: Uint8Array | undefined;
-
-          // 检查文件格式，决定如何获取解码配置
-          const isMP4OrTS = formatLower === 'mp4' || formatLower === 'ts';
-
-          if (!fileData && !isMP4OrTS) {
-            throw new Error('流式模式暂不支持 FLV GOP 预览');
-          }
-
-          if (isMP4OrTS) {
-            // MP4/TS 格式：使用 videoInitData (avcC/hvcC)
-            // 检查是否有多个 sample description（多个 avcC/hvcC 配置）
-            const firstVideoTag = gopVideoTags[0];
-            const sampleDescIndex = firstVideoTag?.mp4Info?.sampleDescIndex ?? 1; // 默认为 1
-
-            let initData: Uint8Array | undefined;
-
-            // 尝试从 videoInitDataList 获取对应配置
-            if (analysisResult.videoInitDataList &&
-              analysisResult.videoInitDataList.length >= sampleDescIndex &&
-              sampleDescIndex >= 1) {
-              const configData = analysisResult.videoInitDataList[sampleDescIndex - 1];
-              if (configData && configData.length > 0) {
-                initData = new Uint8Array(configData);
-                console.log(`MP4: 使用 sample_desc_index=${sampleDescIndex} 的配置 (${initData.length} bytes)`);
-              }
-            }
-
-            // 回退到默认的 videoInitData
-            if (!initData) {
-              if (!analysisResult.videoInitData || analysisResult.videoInitData.length === 0) {
-                throw new Error("MP4/TS 文件缺少视频初始化数据 (videoInitData)");
-              }
-              initData = new Uint8Array(analysisResult.videoInitData);
-              console.log(`MP4: 使用默认 videoInitData (${initData.length} bytes)`);
-            }
-
-            description = initData;
-
-            // 从第一个视频 tag 判断编码类型
-            const codecId = firstVideoTag?.codecId;
-            const isHEVC = codecId === 12;
-
-            if (isHEVC) {
-              // HEVC
-              try {
-                codec = wasm.generateHEVCCodecString(initData, "raw", "concat");
-                console.log(`MP4 HEVC: 使用 hvcC, Codec String: ${codec}`);
-              } catch (e) {
-                console.warn("HEVC codec string 生成失败:", e);
-                codec = 'hvc1.1.6.L93.B0';
-              }
-            } else {
-              // H.264
-              if (initData.length >= 4 && initData[0] === 0x01) {
-                // 从 avcC 解析 profile/level
-                const profile = initData[1];
-                const compat = initData[2];
-                const level = initData[3];
-                codec = `avc1.${profile.toString(16).padStart(2, '0')}${compat.toString(16).padStart(2, '0')}${level.toString(16).padStart(2, '0')}`;
-                console.log(`MP4 AVC: 从 avcC 解析 codec=${codec}`);
-              } else {
-                codec = 'avc1.64001f';  // 默认 High Profile
-                console.log(`MP4 AVC: 使用默认 codec=${codec}`);
-              }
-            }
-          }
-          else {
-            // FLV 格式：从 Sequence Header 获取配置
-            // 注意：到达这里时 fileData 必定不为 null（前面已检查过）
-            const seqHeaderTag = analysisResult.tags.find(t => t.type === 'video' && t.isSeqHeader);
-            if (!seqHeaderTag) {
-              throw new Error("未找到视频 Sequence Header");
-            }
-
-            const seqHeaderOffset = seqHeaderTag.offset + 11;
-            const seqHeaderData = fileData!.subarray(seqHeaderOffset, seqHeaderOffset + seqHeaderTag.size);
-            const codecId = seqHeaderData[0] & 0x0f;
-            const configData = seqHeaderData.subarray(5);
-
-            if (codecId === 12) { // HEVC
-              const isAnnexB = wasm.isAnnexBFormat(configData);
-
-              if (isAnnexB) {
-                console.log("检测到 HEVC Annex B 格式，从 Sequence Header 转换...");
-                isAnnexBRef.current = true;
-                try {
-                  const hvccData = wasm.convertAnnexBToHVCC(configData);
-                  codec = 'hvc1.1.6.L93.B0';
-                  description = hvccData;
-                  console.log(`生成 HEVC Codec String (FORCED): ${codec}`);
-                } catch (e) {
-                  console.warn("HEVC 转换失败:", e);
-                  codec = 'hvc1.1.6.L93.B0';
-                  description = configData;
-                }
-              } else {
-                try {
-                  codec = wasm.generateHEVCCodecString(configData, "raw", "concat");
-                  description = configData;
-                  console.log(`使用原生 HVCC, Codec String: ${codec}`);
-                } catch (e) {
-                  console.warn("HVCC 解析失败:", e);
-                  codec = 'hvc1.1.6.L93.B0';
-                  description = configData;
-                }
-              }
-            } else if (codecId === 7) { // AVC
-              description = configData;
-              codec = 'avc1.64001f';
-            }
-          }
-
-
+          const { config, isAnnexB } = await buildVideoDecoderConfig(videoTagsForDecode);
           if (signal.aborted) return;
-
-          console.log(`配置解码器: codec=${codec}, description=${description?.length ?? 0} bytes`);
-
-          // Reset refs
-          thumbnailsRef.current = [];
-          frameQueueRef.current = [];
-
-          let frameCount = 0;
-          const decoder = new VideoDecoder({
-            output: (frame) => {
-              // output 回调是同步序列化的
-              // 每次 output 一个 frame，我们立即生成缩略图并缓存
-
-              const frameIdx = thumbnailsRef.current.length;
-              if (frameIdx === 0) {
-                const isVert = frame.displayHeight > frame.displayWidth;
-                console.log(`Decoder: First frame size ${frame.displayWidth}x${frame.displayHeight}. Vertical? ${isVert}`, frame);
-                setIsVertical(isVert);
-              }
-              const tagIdx = gopVideoTags[frameIdx]?.index ?? -1;
-              const tag = gopVideoTags[frameIdx];
-              const shouldRenderHiResNow = currentDisplayTagRef.current === tagIdx;
-
-              // 1. 同步生成缩略图 (轻量 Canvas 操作)
-              // 不再存储 VideoFrame，极大降低显存压力
-              const thumb = createThumbnail(frame, tagIdx, tag?.timestamp ?? 0, tag?.isKeyframe ?? false);
-              thumbnailsRef.current.push(thumb);
-
-              if (shouldRenderHiResNow) {
-                drawVideoFrameToCanvas(frame, tagIdx);
-              }
-
-              // 缓存高画质帧到 IndexedDB
-              const cacheCanvas = document.createElement('canvas');
-              // 限制最大宽度，避免存储过大
-              const maxCacheWidth = 1280;
-              const scale = Math.min(1, maxCacheWidth / frame.displayWidth);
-              cacheCanvas.width = Math.round(frame.displayWidth * scale);
-              cacheCanvas.height = Math.round(frame.displayHeight * scale);
-              const ctx = cacheCanvas.getContext('2d');
-              if (ctx) {
-                ctx.drawImage(frame, 0, 0, cacheCanvas.width, cacheCanvas.height);
-                cacheCanvas.toBlob(blob => {
-                  if (!blob) return;
-                  saveFrame(fileId, tagIdx, blob, thumb.imageData).catch(console.error);
-                  if (!shouldRenderHiResNow && currentDisplayTagRef.current === tagIdx) {
-                    drawBlobToCanvas(blob, tagIdx);
-                  }
-                }, 'image/jpeg', 0.8);
-              }
-
-              // 缩略图与缓存生成完成后释放帧资源
-              frame.close();
-
-              if (frameIdx % 15 === 0) {
-                console.log(`Frame ${frameIdx} output.`);
-              }
-              frameCount++;
-            },
-            error: (e) => {
-              console.error("解码错误:", e);
-              setError(`解码错误: ${e.message}`);
-            }
-          });
-
-          const config: VideoDecoderConfig = {
-            codec: codec,
-            description: description,
-            codedWidth: 1280,
-            codedHeight: 720,
-            // codedWidth/codedHeight 是可选的。
-            // 当提供了 description (AVCC/HVCC) 时，解码器会自动从 SPS/PPS 中解析分辨率。
-          };
-
-          const support = await VideoDecoder.isConfigSupported(config);
-
-          if (signal.aborted) return;
-
-          console.log(`配置支持检查: supported=${support.supported}`, support.config);
-
-          if (!support.supported) {
-            throw new Error(`不支持的视频配置: ${codec}`);
+          isAnnexBRef.current = isAnnexB;
+          cancelWorkerJob();
+          await startWorkerDecode('active', videoTagsForDecode, config, isAnnexB, signal);
+        } else if (predecodeQueueRef.current.length > 0) {
+          const nextGop = predecodeQueueRef.current.shift();
+          if (nextGop) {
+            void startPredecode(nextGop);
           }
-
-          decoder.configure(config);
-          decoderRef.current = decoder;
-
-          // 解码所有帧
-          const sampleProvider = (!fileData && isStreamingMode)
-            ? async (tag: TagSummary) => wasmWorker.readSampleData(fileId, tag.index)
-            : undefined;
-          await decodeGop(decoder, gopVideoTags, fileData, wasm, signal, sampleProvider);
         }
 
         // === Audio decode ===
@@ -788,7 +1090,7 @@ export function GopPlayer({
               audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
             }
 
-            const cachedAudio = loadAudioBuffer(fileId, gop.index);
+            const cachedAudio = await loadAudioBuffer(fileId, gop.index, audioCtxRef.current);
             if (cachedAudio) {
               console.log("🔥 Audio Cache Hit");
               audioBufferRef.current = cachedAudio;
@@ -819,7 +1121,7 @@ export function GopPlayer({
                   ? new Uint8Array(analysisResult.audioInitData)
                   : undefined;
                 if (!desc || desc.length === 0) {
-                  console.warn('Missing audio init data for MP4/TS audio decode');
+                  // 缺少音频初始化数据时跳过音频解码
                 } else {
                   const { codec, sampleRate, channels } = parseAacConfig(desc);
                   const audioFrames: AudioData[] = [];
@@ -854,19 +1156,23 @@ export function GopPlayer({
                   const buffer = buildAudioBuffer(audioFrames);
                   if (buffer) {
                     audioBufferRef.current = buffer;
-                    saveAudioBuffer(fileId, gop.index, buffer);
+                    await saveAudioBuffer(fileId, gop.index, buffer);
                     console.log(`Audio Decoded: ${buffer.duration.toFixed(3)}s`);
                   }
                 }
-              } else if (fileData) {
-                // FLV AAC
+              } else {
+                // FLV AAC (支持流式读取)
                 let description: Uint8Array | undefined;
-                const audioSeqHeader = analysisResult.tags.find(t => t.type === 'audio' && t.isSeqHeader);
-                if (audioSeqHeader) {
-                  const offset = audioSeqHeader.offset + 11;
-                  const hData = fileData.subarray(offset, offset + audioSeqHeader.size);
-                  if ((hData[0] >> 4) === 10) {
-                    description = hData.subarray(2);
+                if (analysisResult.audioInitData && analysisResult.audioInitData.length > 0) {
+                  description = new Uint8Array(analysisResult.audioInitData);
+                } else if (fileData) {
+                  const audioSeqHeader = analysisResult.tags.find(t => t.type === 'audio' && t.isSeqHeader);
+                  if (audioSeqHeader) {
+                    const offset = audioSeqHeader.offset + 11;
+                    const hData = fileData.subarray(offset, offset + audioSeqHeader.size);
+                    if ((hData[0] >> 4) === 10) {
+                      description = hData.subarray(2);
+                    }
                   }
                 }
 
@@ -885,8 +1191,14 @@ export function GopPlayer({
                 });
 
                 for (const tag of gopAudioTags) {
-                  const offset = tag.offset + 11;
-                  const chunkData = fileData.subarray(offset, offset + tag.size);
+                  let chunkData: Uint8Array | null = null;
+                  if (fileData) {
+                    const offset = tag.offset + 11;
+                    chunkData = fileData.subarray(offset, offset + tag.size);
+                  } else if (isStreamingMode) {
+                    chunkData = await wasmWorker.readSampleData(fileId, tag.index);
+                  }
+                  if (!chunkData || chunkData.length < 2) continue;
                   if ((chunkData[0] >> 4) === 10 && chunkData[1] === 1) {
                     audioDecoder.decode(new EncodedAudioChunk({
                       type: 'key',
@@ -901,7 +1213,7 @@ export function GopPlayer({
                 const buffer = buildAudioBuffer(audioFrames);
                 if (buffer) {
                   audioBufferRef.current = buffer;
-                  saveAudioBuffer(fileId, gop.index, buffer);
+                  await saveAudioBuffer(fileId, gop.index, buffer);
                   console.log(`Audio Decoded: ${buffer.duration.toFixed(3)}s`);
                 }
               }
@@ -913,31 +1225,35 @@ export function GopPlayer({
 
         if (signal.aborted) return;
 
-        // 设置缩略图状态
-        setThumbnails(thumbnailsRef.current);
+        if (signal.aborted) return;
 
+        if (skipVideoDecode) {
+          setThumbnails(thumbnailsRef.current);
 
-        // 如果有初始选中的 Tag，找到对应位置
-        if (initialTagIndex !== undefined) {
-          const idx = thumbnailsRef.current.findIndex(t => t.tagIndex === initialTagIndex);
-          if (idx >= 0) {
-            setSelectedThumbnail(idx);
-            setCurrentFrame(idx + 1);
-            await drawFrameFromCache(thumbnailsRef.current[idx].tagIndex, idx, true);
+          if (initialTagIndex !== undefined) {
+            const idx = thumbnailsRef.current.findIndex(t => t.tagIndex === initialTagIndex);
+            if (idx >= 0) {
+              setSelectedThumbnail(idx);
+              setCurrentFrame(idx + 1);
+              await drawFrameFromCache(thumbnailsRef.current[idx].tagIndex, idx, true);
+            }
+          } else if (thumbnailsRef.current.length > 0) {
+            setSelectedThumbnail(0);
+            setCurrentFrame(1);
+            await drawFrameFromCache(thumbnailsRef.current[0].tagIndex, 0, true);
           }
-        } else if (thumbnailsRef.current.length > 0) {
-          // 显示第一帧，但不自动播放（等待用户点击播放按钮）
-          setSelectedThumbnail(0);
-          setCurrentFrame(1);
-          await drawFrameFromCache(thumbnailsRef.current[0].tagIndex, 0, true);
-        }
 
-        if (autoPlayStartRef.current && thumbnailsRef.current.length > 0) {
+          if (autoPlayStartRef.current && thumbnailsRef.current.length > 0) {
+            autoPlayStartRef.current = false;
+            setIsPlaying(true);
+          }
+
+          setIsDecoding(false);
+        } else if (autoPlayStartRef.current && thumbnailsRef.current.length > 0) {
           autoPlayStartRef.current = false;
           setIsPlaying(true);
         }
 
-        setIsDecoding(false);
 
       } catch (e) {
         if (!signal.aborted) {
@@ -951,6 +1267,7 @@ export function GopPlayer({
 
     return () => {
       controller.abort();
+      cancelWorkerJob();
 
       if (decoderRef.current) {
         try {
@@ -981,7 +1298,14 @@ export function GopPlayer({
     initialTagIndex,
     isLoadingGopTags,
     isStreamingMode,
-    gop.index  // 添加 gop.index 确保 GOP 切换时重新初始化
+    gop.index,  // 添加 gop.index, 确保 GOP 切换时重新初始化
+    buildVideoDecoderConfig,
+    cancelWorkerJob,
+    startWorkerDecode,
+    startPredecode,
+    gops,
+    currentGopListIndex,
+    preloadGopCount
   ]);
 
   // 解码 GOP
@@ -1132,7 +1456,7 @@ export function GopPlayer({
           }
         }
 
-        const isKey = frameIndex === 0 || tag.isKeyframe;
+        const isKey = tag.isKeyframe;
 
         const chunk = new EncodedVideoChunk({
           type: isKey ? 'key' : 'delta',
@@ -1244,7 +1568,7 @@ export function GopPlayer({
               ) : (
                 <canvas ref={canvasRef} />
               )}
-              {!error && !isFrameHiResReady && !isPlaying && (
+              {!error && !isPlaying && thumbnails.length === 0 && isDecoding && (
                 <div className="decoding-overlay">
                   <div className="spinner" />
                   <span>{isLoadingGopTags ? '加载 GOP 数据...' : '解码中'}</span>
@@ -1255,7 +1579,7 @@ export function GopPlayer({
 
           <div className="player-sidebar">
             {/* 帧缩略图画廊 */}
-            {thumbnails.length > 0 && (
+            {(gopVideoTags.length > 0 || isLoadingGopTags || isDecoding) && (
               <div className="frame-gallery">
                 <div className="gallery-header">
                   <span>帧画廊 ({thumbnails.length} 帧)</span>
@@ -1269,6 +1593,9 @@ export function GopPlayer({
                     }
                   }}
                 >
+                  {thumbnails.length === 0 && (
+                    <div className="gallery-empty">正在解码帧...</div>
+                  )}
                   {thumbnails.map((thumb, idx) => (
                     <div
                       key={thumb.tagIndex}

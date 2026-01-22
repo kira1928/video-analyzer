@@ -17,11 +17,23 @@ interface CachedFrameMeta {
   thumbBytes?: number;
 }
 
+interface CachedAudioMeta {
+  fileId: string;
+  gopIndex: number;
+  timestamp: number;
+  sampleRate: number;
+  channels: number;
+  length: number;
+  bytes: number;
+}
+
 const DB_NAME = 'VideoAnalyzerCache';
 const STORE_NAME = 'frames';
+const AUDIO_STORE_NAME = 'audio';
 const MAX_OPFS_BYTES = 500 * 1024 * 1024;
 const ESTIMATED_FRAME_BYTES = 180 * 1024;
 const ESTIMATED_THUMB_BYTES = 12 * 1024;
+const AUDIO_HEADER_BYTES = 16;
 
 // === 缓存开关 ===
 let cacheEnabled = true;
@@ -67,6 +79,7 @@ export interface CacheStats {
 
 export async function getCacheStats(): Promise<CacheStats> {
   let indexedDBCount = 0;
+  let audioDbCount = 0;
   let totalBytes = 0;
 
   try {
@@ -80,11 +93,21 @@ export async function getCacheStats(): Promise<CacheStats> {
     });
     indexedDBCount = metas.length;
     totalBytes = metas.reduce((sum, meta) => sum + estimateMetaBytes(meta), 0);
+
+    const audioMetas = await new Promise<CachedAudioMeta[]>((resolve, reject) => {
+      const transaction = db.transaction(AUDIO_STORE_NAME, 'readonly');
+      const store = transaction.objectStore(AUDIO_STORE_NAME);
+      const request = store.getAll();
+      request.onsuccess = () => resolve(request.result as CachedAudioMeta[]);
+      request.onerror = () => reject(request.error);
+    });
+    audioDbCount = audioMetas.length;
+    totalBytes += audioMetas.reduce((sum, meta) => sum + meta.bytes, 0);
   } catch (e) {
     // 忽略错误
   }
 
-  const audioBufferCount = audioCache.size;
+  const audioBufferCount = audioCache.size + audioDbCount;
 
   const estimatedBytes = totalBytes;
   let estimatedSize = '0 B';
@@ -100,29 +123,19 @@ export async function getCacheStats(): Promise<CacheStats> {
 }
 
 // === Audio Cache (In-Memory) ===
-// Note: Audio cache is also cleared per file session in App usually, but for safely, we can key it by fileId too?
-// For now, let's keep audio cache simple (GOP index collision possible if multiple files opened).
-// Ideally audio cache should also be keyed.
+// Note: Audio cache is also cleared per file session in App usually, but for safety, we key it by fileId.
 const audioCache = new Map<string, AudioBuffer>(); // Key: "fileId_gopIndex"
 const MAX_AUDIO_CACHE = 10;
-
-export function saveAudioBuffer(fileId: string, gopIndex: number, buffer: AudioBuffer) {
-  const key = `${fileId}_${gopIndex}`;
-  if (audioCache.size >= MAX_AUDIO_CACHE) {
-    const firstKey = audioCache.keys().next().value;
-    if (firstKey !== undefined) audioCache.delete(firstKey);
-  }
-  audioCache.set(key, buffer);
-}
-
-export function loadAudioBuffer(fileId: string, gopIndex: number): AudioBuffer | undefined {
-  return audioCache.get(`${fileId}_${gopIndex}`);
-}
 
 // === OPFS Helpers ===
 async function getOpfsFrameDir() {
   const root = await navigator.storage.getDirectory();
   return await root.getDirectoryHandle('frames', { create: true });
+}
+
+async function getOpfsAudioDir() {
+  const root = await navigator.storage.getDirectory();
+  return await root.getDirectoryHandle('audio', { create: true });
 }
 
 async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
@@ -147,6 +160,11 @@ function getOpfsFileName(fileId: string, tagIndex: number) {
 
 function getOpfsThumbFileName(fileId: string, tagIndex: number) {
   return `${getOpfsFileName(fileId, tagIndex)}_thumb`;
+}
+
+function getOpfsAudioFileName(fileId: string, gopIndex: number) {
+  const safeFileId = fileId.replace(/[^a-z0-9.\-_]/gi, '_');
+  return `${safeFileId}_${gopIndex}_audio`;
 }
 
 async function saveToOpfs(
@@ -219,10 +237,21 @@ async function deleteFromOpfs(fileId: string, tagIndex: number) {
   }
 }
 
+async function deleteAudioFromOpfs(fileId: string, gopIndex: number) {
+  try {
+    const dir = await getOpfsAudioDir();
+    const fileName = getOpfsAudioFileName(fileId, gopIndex);
+    await dir.removeEntry(fileName);
+  } catch (e) {
+    // Ignore if not found
+  }
+}
+
 async function clearOpfs() {
   try {
     const root = await navigator.storage.getDirectory();
     await root.removeEntry('frames', { recursive: true });
+    await root.removeEntry('audio', { recursive: true });
   } catch (e) {
     // Ignore
   }
@@ -279,7 +308,7 @@ function openDB(): Promise<IDBDatabase> {
   if (pendingOpenPromise) return pendingOpenPromise;
 
   pendingOpenPromise = new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 4); // Bump version to 4 (Schema change: Meta no longer has thumbnail string)
+    const request = indexedDB.open(DB_NAME, 5); // Add audio store
 
     request.onerror = () => {
       pendingOpenPromise = null;
@@ -304,10 +333,12 @@ function openDB(): Promise<IDBDatabase> {
 
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
-      if (db.objectStoreNames.contains(STORE_NAME)) {
-        db.deleteObjectStore(STORE_NAME);
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: ['fileId', 'tagIndex'] });
       }
-      db.createObjectStore(STORE_NAME, { keyPath: ['fileId', 'tagIndex'] });
+      if (!db.objectStoreNames.contains(AUDIO_STORE_NAME)) {
+        db.createObjectStore(AUDIO_STORE_NAME, { keyPath: ['fileId', 'gopIndex'] });
+      }
     };
   });
   return pendingOpenPromise;
@@ -318,11 +349,13 @@ export async function clearCache(): Promise<void> {
   await clearOpfs();
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.clear();
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    const transaction = db.transaction([STORE_NAME, AUDIO_STORE_NAME], 'readwrite');
+    const frameStore = transaction.objectStore(STORE_NAME);
+    const audioStore = transaction.objectStore(AUDIO_STORE_NAME);
+    frameStore.clear();
+    audioStore.clear();
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
   });
 }
 
@@ -417,6 +450,132 @@ export async function loadCachedFrame(fileId: string, tagIndex: number): Promise
 export async function loadFrame(fileId: string, tagIndex: number): Promise<Blob | null> {
   const frame = await loadCachedFrame(fileId, tagIndex);
   return frame ? frame.blob : null;
+}
+
+function encodeAudioBuffer(buffer: AudioBuffer): ArrayBuffer {
+  const channels = buffer.numberOfChannels;
+  const length = buffer.length;
+  const totalSamples = channels * length;
+  const data = new ArrayBuffer(AUDIO_HEADER_BYTES + totalSamples * 4);
+  const view = new DataView(data);
+  view.setUint32(0, buffer.sampleRate, true);
+  view.setUint32(4, length, true);
+  view.setUint16(8, channels, true);
+  const floatView = new Float32Array(data, AUDIO_HEADER_BYTES, totalSamples);
+  for (let ch = 0; ch < channels; ch++) {
+    floatView.set(buffer.getChannelData(ch), ch * length);
+  }
+  return data;
+}
+
+function decodeAudioBuffer(
+  audioCtx: AudioContext,
+  data: ArrayBuffer
+): AudioBuffer | null {
+  if (data.byteLength < AUDIO_HEADER_BYTES) return null;
+  const view = new DataView(data);
+  const sampleRate = view.getUint32(0, true);
+  const length = view.getUint32(4, true);
+  const channels = view.getUint16(8, true);
+  if (!sampleRate || !length || !channels) return null;
+  const expectedBytes = AUDIO_HEADER_BYTES + channels * length * 4;
+  if (data.byteLength < expectedBytes) return null;
+  const buffer = audioCtx.createBuffer(channels, length, sampleRate);
+  const floatView = new Float32Array(data, AUDIO_HEADER_BYTES, channels * length);
+  for (let ch = 0; ch < channels; ch++) {
+    buffer.getChannelData(ch).set(
+      floatView.subarray(ch * length, (ch + 1) * length)
+    );
+  }
+  return buffer;
+}
+
+async function saveAudioToOpfs(fileId: string, gopIndex: number, buffer: AudioBuffer): Promise<number> {
+  const dir = await getOpfsAudioDir();
+  const fileName = getOpfsAudioFileName(fileId, gopIndex);
+  const fileHandle = await dir.getFileHandle(fileName, { create: true });
+  const writable = await fileHandle.createWritable();
+  const data = encodeAudioBuffer(buffer);
+  await writable.write(data);
+  await writable.close();
+  return data.byteLength;
+}
+
+async function loadAudioFromOpfs(fileId: string, gopIndex: number): Promise<ArrayBuffer> {
+  const dir = await getOpfsAudioDir();
+  const fileName = getOpfsAudioFileName(fileId, gopIndex);
+  const fileHandle = await dir.getFileHandle(fileName);
+  const blob = await fileHandle.getFile();
+  return await blob.arrayBuffer();
+}
+
+export async function saveAudioBuffer(
+  fileId: string,
+  gopIndex: number,
+  buffer: AudioBuffer
+): Promise<void> {
+  if (!cacheEnabled) return;
+
+  const key = `${fileId}_${gopIndex}`;
+  if (audioCache.size >= MAX_AUDIO_CACHE) {
+    const firstKey = audioCache.keys().next().value;
+    if (firstKey !== undefined) audioCache.delete(firstKey);
+  }
+  audioCache.set(key, buffer);
+
+  try {
+    const bytes = await saveAudioToOpfs(fileId, gopIndex, buffer);
+    const db = await openDB();
+    const meta: CachedAudioMeta = {
+      fileId,
+      gopIndex,
+      timestamp: Date.now(),
+      sampleRate: buffer.sampleRate,
+      channels: buffer.numberOfChannels,
+      length: buffer.length,
+      bytes
+    };
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(AUDIO_STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(AUDIO_STORE_NAME);
+      store.put(meta);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+  } catch (e) {
+    console.warn('Failed to save audio buffer to cache:', e);
+  }
+}
+
+export async function loadAudioBuffer(
+  fileId: string,
+  gopIndex: number,
+  audioCtx: AudioContext
+): Promise<AudioBuffer | null> {
+  if (!cacheEnabled) return null;
+  const key = `${fileId}_${gopIndex}`;
+  const cached = audioCache.get(key);
+  if (cached) return cached;
+
+  try {
+    const db = await openDB();
+    const meta = await new Promise<CachedAudioMeta | undefined>((resolve, reject) => {
+      const transaction = db.transaction(AUDIO_STORE_NAME, 'readonly');
+      const store = transaction.objectStore(AUDIO_STORE_NAME);
+      const request = store.get([fileId, gopIndex]);
+      request.onsuccess = () => resolve(request.result as CachedAudioMeta | undefined);
+      request.onerror = () => reject(request.error);
+    });
+    if (!meta) return null;
+    const data = await loadAudioFromOpfs(fileId, gopIndex);
+    const buffer = decodeAudioBuffer(audioCtx, data);
+    if (!buffer) return null;
+    audioCache.set(key, buffer);
+    return buffer;
+  } catch (e) {
+    console.warn('Failed to load audio buffer from cache:', e);
+    return null;
+  }
 }
 
 /**

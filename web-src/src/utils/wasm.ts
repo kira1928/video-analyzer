@@ -42,6 +42,7 @@ interface WasmModule {
   get_segment_info: (resultJson: string) => any;
   split_flv_segment: (fileData: Uint8Array, resultJson: string, segmentIndex: number) => Uint8Array;
   split_mp4_segment: (fileData: Uint8Array, resultJson: string, segmentIndex: number) => Uint8Array;
+  splitMp4SegmentStreaming: (fileId: string, fileData: Uint8Array, segmentIndex: number) => Uint8Array;
   // 流式解析器类
   StreamingMp4Parser: new (fileSize: number, readCallback: (offset: number, length: number) => Promise<Uint8Array>) => StreamingMp4ParserInstance;
   StreamingFlvParser: new (fileSize: number, readCallback: (offset: number, length: number) => Promise<Uint8Array>) => StreamingFlvParserInstance;
@@ -108,6 +109,7 @@ export async function loadWasm(config: WasmLoaderConfig = {}): Promise<void> {
         get_segment_info: module.get_segment_info,
         split_flv_segment: module.split_flv_segment,
         split_mp4_segment: module.split_mp4_segment,
+        splitMp4SegmentStreaming: module.splitMp4SegmentStreaming,
       });
 
       onStatusChange?.('ready', `WASM 已加载 (Standalone Vite)`);
@@ -164,6 +166,7 @@ export async function loadWasm(config: WasmLoaderConfig = {}): Promise<void> {
       get_segment_info: module.get_segment_info,
       split_flv_segment: module.split_flv_segment,
       split_mp4_segment: module.split_mp4_segment,
+      splitMp4SegmentStreaming: module.splitMp4SegmentStreaming,
     });
 
     const version = module.getVersion();
@@ -339,4 +342,16 @@ export function splitMp4Segment(
 export function getSegmentInfo(resultJson: string): any {
   const module = getWasmModule() as unknown as WasmModule;
   return module.get_segment_info(resultJson);
+}
+
+/**
+ * 流式模式下分割 MP4 文件段（使用缓存的解析结果）
+ */
+export function splitMp4SegmentStreaming(
+  fileId: string,
+  fileData: Uint8Array,
+  segmentIndex: number
+): Uint8Array {
+  const module = getWasmModule() as unknown as WasmModule;
+  return module.splitMp4SegmentStreaming(fileId, fileData, segmentIndex);
 }

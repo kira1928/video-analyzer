@@ -1,16 +1,19 @@
 import { useState } from 'react';
 import { AnalysisResult, SegmentInfo } from '../types';
 import { formatDuration } from '../utils/format';
-import { splitFlvSegment, splitMp4Segment } from '../utils/wasm';
+import { splitFlvSegment, splitMp4Segment, splitMp4SegmentStreaming } from '../utils/wasm';
 import './SegmentPanel.css';
 
 interface SegmentPanelProps {
   result: AnalysisResult;
   fileData: Uint8Array | null;
+  currentFile?: File | null;
+  fileId?: string;  // 流式模式需要
+  isStreamingMode?: boolean;  // 是否为流式模式
   onExportSegment?: (segmentIndex: number) => void;
 }
 
-export function SegmentPanel({ result, fileData, onExportSegment }: SegmentPanelProps) {
+export function SegmentPanel({ result, fileData, currentFile, fileId, isStreamingMode, onExportSegment }: SegmentPanelProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [exportingIndex, setExportingIndex] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -27,11 +30,14 @@ export function SegmentPanel({ result, fileData, onExportSegment }: SegmentPanel
   const handleExport = async (e: React.MouseEvent, index: number) => {
     e.stopPropagation();
 
-    if (!fileData) {
-      // 如果是流式模式，目前还需要完整文件数据
-      // 这里的实现假定 fileData 可用
-      setError('无法导出：需要完整文件数据');
-      return;
+    let data = fileData;
+    if (!data) {
+      if (!currentFile) {
+        setError('无法导出：需要完整文件数据');
+        return;
+      }
+      const buffer = await currentFile.arrayBuffer();
+      data = new Uint8Array(buffer);
     }
 
     try {
@@ -41,13 +47,26 @@ export function SegmentPanel({ result, fileData, onExportSegment }: SegmentPanel
       // 给 UI 渲染时间
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      const resultJson = JSON.stringify(result);
+      let outputData: Uint8Array;
       if (!isFlv && !isMp4) {
         throw new Error('暂不支持当前格式导出');
       }
-      const outputData = isFlv
-        ? splitFlvSegment(fileData, resultJson, index)
-        : splitMp4Segment(fileData, resultJson, index);
+
+      if (isFlv) {
+        const resultJson = JSON.stringify(result);
+        outputData = splitFlvSegment(data, resultJson, index);
+      } else {
+        // MP4: 流式模式下使用 splitMp4SegmentStreaming
+        if (isStreamingMode && fileId) {
+          console.log(`[SegmentPanel] 使用流式导出: fileId=${fileId}, dataSize=${data.length}, segmentIndex=${index}`);
+          console.log(`[SegmentPanel] result.segments:`, result.segments);
+          outputData = splitMp4SegmentStreaming(fileId, data, index);
+        } else {
+          console.log(`[SegmentPanel] 使用标准导出: dataSize=${data.length}, segmentIndex=${index}, tagsCount=${result.tags?.length || 0}`);
+          const resultJson = JSON.stringify(result);
+          outputData = splitMp4Segment(data, resultJson, index);
+        }
+      }
 
       // 创建下载
       // @ts-ignore
@@ -111,7 +130,7 @@ export function SegmentPanel({ result, fileData, onExportSegment }: SegmentPanel
                 <button
                   className="export-btn"
                   onClick={(e) => handleExport(e, seg.index)}
-                  disabled={exportingIndex !== null || !fileData || (!isFlv && !isMp4)}
+                  disabled={exportingIndex !== null || (!fileData && !currentFile) || (!isFlv && !isMp4)}
                   title={(!isFlv && !isMp4) ? '目前只支持 FLV/MP4 导出' : '导出该分段'}
                 >
                   {!isFlv && !isMp4 ? '不支持导出' : (exportingIndex === seg.index ? '正在导出...' : (isMp4 ? '导出 MP4' : '导出 FLV'))}

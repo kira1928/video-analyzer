@@ -915,8 +915,11 @@ impl<R: Read + Seek + 'static> ContainerReader for Mp4Container<R> {
             sample_info.dts as u32
         };
 
-        let pts_ms =
-            dts_ms.wrapping_add((sample_info.cts_offset * 1000 / track.timescale as i32) as u32);
+        let pts_ms = {
+            let cts_ms = (sample_info.cts_offset as i64) * 1000 / track.timescale as i64;
+            let pts = dts_ms as i64 + cts_ms;
+            if pts < 0 { 0 } else { pts as u32 }
+        };
 
         // 计算duration（毫秒）
         let duration_ms = if track.timescale > 0 {

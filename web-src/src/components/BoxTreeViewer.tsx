@@ -51,6 +51,10 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
   const [loadingNodes, setLoadingNodes] = useState<Set<string>>(new Set());
 
   const [streamingFieldsMap, setStreamingFieldsMap] = useState<Map<string, StreamingFieldState>>(new Map());
+  const [streamingHexData, setStreamingHexData] = useState<Uint8Array | null>(null);
+  const [streamingHexBaseOffset, setStreamingHexBaseOffset] = useState<number>(0);
+  const [streamingHexLoading, setStreamingHexLoading] = useState(false);
+  const [streamingHexError, setStreamingHexError] = useState<string | null>(null);
 
   const getNodeKey = useCallback((node: Mp4BoxNode) => `${node.offset}-${node.size}`, []);
   // 展开状态管理
@@ -85,6 +89,10 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
     setStreamingSearchResults([]);
     setStreamingFieldsMap(new Map());
     setLoadingNodes(new Set());
+    setStreamingHexData(null);
+    setStreamingHexBaseOffset(0);
+    setStreamingHexLoading(false);
+    setStreamingHexError(null);
     setSelectedNode(null);
     setSelectedField(null);
   }, [boxTree]);
@@ -152,6 +160,42 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
     }
     return current || null;
   }, [displayTree, selectedNode]);
+
+  // 流式模式：加载选中 Box 的前 4KB 作为 Hex 预览
+  useEffect(() => {
+    if (!isStreamingMode || !fileId || !selectedBox) {
+      setStreamingHexData(null);
+      setStreamingHexBaseOffset(0);
+      setStreamingHexLoading(false);
+      setStreamingHexError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setStreamingHexLoading(true);
+    setStreamingHexError(null);
+    const baseOffset = Number(selectedBox.offset);
+    const maxBytes = Math.min(Number(selectedBox.size), STREAMING_HEX_CHUNK_BYTES);
+
+    (async () => {
+      try {
+        const data = await wasmWorker.readMp4Bytes(fileId, baseOffset, maxBytes);
+        if (cancelled) return;
+        setStreamingHexData(data);
+        setStreamingHexBaseOffset(baseOffset);
+      } catch (e) {
+        if (cancelled) return;
+        setStreamingHexData(null);
+        setStreamingHexError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setStreamingHexLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId, isStreamingMode, selectedBox]);
 
   const findNodeByPath = useCallback((nodes: Mp4BoxNode[], path: string): Mp4BoxNode | null => {
     const indices = path.split('-').map(Number);
@@ -243,6 +287,38 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
     return { lines, startOffset: boxStart, endOffset: boxEnd };
   }, [selectedBox, fileData]);
 
+  const streamingHexPreview = useMemo(() => {
+    if (!selectedBox || !streamingHexData) return { lines: [], startOffset: 0, endOffset: 0 };
+
+    const maxBytes = STREAMING_HEX_CHUNK_BYTES;
+    const boxStart = streamingHexBaseOffset;
+    const boxEnd = Math.min(boxStart + Number(selectedBox.size), boxStart + maxBytes);
+
+    const alignedStart = Math.floor(boxStart / HEX_BYTES_PER_LINE) * HEX_BYTES_PER_LINE;
+    const alignedEnd = Math.ceil(boxEnd / HEX_BYTES_PER_LINE) * HEX_BYTES_PER_LINE;
+
+    const lines: HexLine[] = [];
+    const buffer = streamingHexData;
+    for (let offset = alignedStart; offset < alignedEnd && offset < boxStart + buffer.length; offset += HEX_BYTES_PER_LINE) {
+      const bytes: number[] = [];
+      let ascii = '';
+      for (let i = 0; i < HEX_BYTES_PER_LINE; i++) {
+        const globalOffset = offset + i;
+        if (globalOffset < boxStart || globalOffset >= boxStart + buffer.length) {
+          bytes.push(0);
+          ascii += ' ';
+          continue;
+        }
+        const byte = buffer[globalOffset - boxStart];
+        bytes.push(byte);
+        ascii += byte >= 32 && byte < 127 ? String.fromCharCode(byte) : '.';
+      }
+      lines.push({ offset, bytes, ascii });
+    }
+
+    return { lines, startOffset: boxStart, endOffset: boxEnd };
+  }, [selectedBox, streamingHexBaseOffset, streamingHexData]);
+
   // 计算高亮区域
   const highlightRanges = useMemo<HighlightRange[]>(() => {
     if (!selectedBox) return [];
@@ -304,9 +380,17 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
   useEffect(() => {
     if (!isStreamingMode || !fileId || !selectedBox) return;
     const key = getNodeKey(selectedBox);
-    if (streamingFieldsMap.has(key)) return;
+    console.log(`[BoxTreeViewer] useEffect triggered for ${selectedBox.boxType}, key=${key}`);
+
+    // 检查是否已经在缓存中
+    const existing = streamingFieldsMap.get(key);
+    if (existing) {
+      console.log(`[BoxTreeViewer] Already have fields for ${key}, isLoading=${existing.isLoading}, headerFields.length=${existing.headerFields?.length || 0}`);
+      return;
+    }
 
     let cancelled = false;
+    console.log(`[BoxTreeViewer] Setting isLoading=true for ${key}`);
     setStreamingFieldsMap(prev => {
       const next = new Map(prev);
       next.set(key, {
@@ -320,32 +404,49 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
 
     (async () => {
       try {
+        console.log(`[BoxTreeViewer] Loading fields for ${selectedBox.boxType} at offset ${selectedBox.offset}, size ${selectedBox.size}`);
         const result = await wasmWorker.getMp4BoxFields(
           fileId,
           selectedBox.offset,
           selectedBox.size,
           selectedBox.boxType,
           0,
-          0
+          ITEMS_PER_GROUP
         ) as Mp4BoxFieldsResult;
-        if (cancelled) return;
+        console.log(`[BoxTreeViewer] Got fields for ${selectedBox.boxType}:`, result);
+        if (cancelled) {
+          console.log(`[BoxTreeViewer] Cancelled for ${key}`);
+          return;
+        }
+        console.log(`[BoxTreeViewer] Setting isLoading=false for ${key}, headerFields.length=${result.headerFields?.length || 0}`);
         setStreamingFieldsMap(prev => {
           const next = new Map(prev);
           const existing = next.get(key);
+          const entryGroups = new Map(existing?.entryGroups ?? []);
+          if (result.entries && result.entries.length > 0) {
+            entryGroups.set(0, result.entries);
+          }
           next.set(key, {
-            headerFields: result.headerFields,
+            headerFields: result.headerFields ?? [],
             entryCount: result.entryCount,
-            entryGroups: existing?.entryGroups ?? new Map(),
+            entryGroups,
             loadingGroups: existing?.loadingGroups ?? new Set(),
             isLoading: false,
           });
           return next;
         });
-      } catch {
+      } catch (err) {
+        console.error(`[BoxTreeViewer] Failed to load fields for ${selectedBox.boxType}:`, err);
         if (!cancelled) {
+          // 不删除条目，而是设置为加载失败状态
           setStreamingFieldsMap(prev => {
             const next = new Map(prev);
-            next.delete(key);
+            next.set(key, {
+              headerFields: [],
+              entryGroups: new Map(),
+              loadingGroups: new Set(),
+              isLoading: false, // 设为 false 以停止显示"加载中"
+            });
             return next;
           });
         }
@@ -355,7 +456,8 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
     return () => {
       cancelled = true;
     };
-  }, [fileId, getNodeKey, isStreamingMode, selectedBox, streamingFieldsMap]);
+    // 移除 streamingFieldsMap 依赖，只在 selectedBox 变化时重新加载
+  }, [fileId, getNodeKey, isStreamingMode, selectedBox]);
 
   const selectedBoxKey = selectedBox ? getNodeKey(selectedBox) : null;
   const streamingFieldState = selectedBoxKey ? streamingFieldsMap.get(selectedBoxKey) : undefined;
@@ -506,8 +608,8 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
 
       const filteredChildren = node.children
         ? node.children
-            .map((child, idx) => filterNode(child, `${path}-${idx}`))
-            .filter((n): n is Mp4BoxNode => n !== null)
+          .map((child, idx) => filterNode(child, `${path}-${idx}`))
+          .filter((n): n is Mp4BoxNode => n !== null)
         : undefined;
 
       if (matches || (filteredChildren && filteredChildren.length > 0)) {
@@ -686,6 +788,12 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
                         {selectedBox.boxType} @ 0x{selectedBox.offset.toString(16).toUpperCase()}
                         ({formatSize(selectedBox.size)}) - 流式按需加载
                       </span>
+                      {streamingHexLoading && (
+                        <span className="box-hex-info">读取中...</span>
+                      )}
+                      {streamingHexError && (
+                        <span className="box-hex-info">读取失败: {streamingHexError}</span>
+                      )}
                       {selectedField && (
                         <button
                           className="hex-clear-selection"
@@ -696,13 +804,16 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
                         </button>
                       )}
                     </div>
-                    <div className="box-hex-content streaming-hex" ref={hexContainerRef}>
-                      <StreamingHexView
-                        fileId={fileId}
-                        box={selectedBox}
-                        highlightRanges={highlightRanges}
-                        containerRef={hexContainerRef}
-                      />
+                    <div className="box-hex-content" ref={hexContainerRef}>
+                      {streamingHexData ? (
+                        <HexView
+                          lines={streamingHexPreview.lines}
+                          boxStart={Number(selectedBox.offset)}
+                          highlightRanges={highlightRanges}
+                        />
+                      ) : (
+                        <div className="box-hex-placeholder" />
+                      )}
                     </div>
                   </div>
                 ) : (
@@ -814,6 +925,7 @@ function StreamingHexView({ fileId, box, highlightRanges, containerRef }: Stream
   const totalLines = Math.ceil(totalBytes / HEX_BYTES_PER_LINE);
   const [viewport, setViewport] = useState({ start: 0, end: 0 });
   const [, setRenderTick] = useState(0);
+  const [jumpInput, setJumpInput] = useState('');
   const cacheRef = useRef<Map<number, Uint8Array>>(new Map());
   const pendingRef = useRef<Set<number>>(new Set());
   const accessRef = useRef<Map<number, number>>(new Map());
@@ -821,6 +933,20 @@ function StreamingHexView({ fileId, box, highlightRanges, containerRef }: Stream
   const activeKeyRef = useRef('');
   const visibleChunkRangeRef = useRef<{ start: number; end: number } | null>(null);
   const isMountedRef = useRef(true);
+
+  // 跳转到偏移
+  const jumpToOffset = useCallback((offset: number) => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    // 确保偏移在有效范围内
+    const clampedOffset = Math.max(0, Math.min(offset, totalBytes - 1));
+    const lineIndex = Math.floor(clampedOffset / HEX_BYTES_PER_LINE);
+    const scrollTop = lineIndex * STREAMING_HEX_LINE_HEIGHT;
+
+    el.scrollTop = scrollTop;
+    // updateViewport 会在滚动事件中自动调用
+  }, [containerRef, totalBytes]);
 
   const getByteHighlight = useCallback((globalOffset: number): string => {
     for (const range of highlightRanges) {
@@ -1071,6 +1197,37 @@ function StreamingHexView({ fileId, box, highlightRanges, containerRef }: Stream
           </div>
         ))}
       </div>
+      <div className="hex-jump-controls">
+        <input
+          type="text"
+          placeholder="跳转到偏移 (hex 或 dec)"
+          value={jumpInput}
+          onChange={(e) => setJumpInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              const input = jumpInput.trim();
+              if (!input) return;
+
+              let offset: number;
+              if (input.startsWith('0x') || /^[0-9A-Fa-f]+$/.test(input)) {
+                // Hex format
+                offset = parseInt(input.replace('0x', ''), 16);
+              } else {
+                // Decimal format
+                offset = parseInt(input, 10);
+              }
+
+              if (!isNaN(offset)) {
+                jumpToOffset(offset);
+              }
+            }
+          }}
+          className="hex-jump-input"
+        />
+        <span className="hex-jump-hint">
+          按 Enter 跳转 (支持 hex: 0x1A2B 或 dec: 6699)
+        </span>
+      </div>
     </div>
   );
 }
@@ -1187,30 +1344,28 @@ interface BoxDetailPanelProps {
 /** 每组显示的最大条目数 */
 const ITEMS_PER_GROUP = 100;
 
-function BoxDetailPanel({
-  node,
-  descriptionMode,
-  selectedField,
-  onFieldSelect,
-  streamingFieldState,
-  onLoadFieldGroup
-}: BoxDetailPanelProps) {
-  // 分组展开状态
-  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set([0])); // 默认展开第一组
-  useEffect(() => {
-    setExpandedGroups(new Set([0]));
-  }, [node.boxType, node.offset, node.size]);
+function parseArrayValue(value: string): unknown[] | null {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 
-  const handleFieldClick = (field: BoxField) => {
-    // 只有有 offset 信息的字段才能高亮
-    if (field.offset !== undefined && field.size !== undefined) {
-      if (selectedField === field) {
-        onFieldSelect(null);  // 取消选择
-      } else {
-        onFieldSelect(field);
-      }
-    }
-  };
+function ArrayValueViewer({ items }: { items: unknown[] }) {
+  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
+  const groups: { start: number; end: number; values: unknown[]; index: number }[] = [];
+  for (let i = 0; i < items.length; i += ITEMS_PER_GROUP) {
+    groups.push({
+      start: i,
+      end: Math.min(items.length, i + ITEMS_PER_GROUP) - 1,
+      values: items.slice(i, i + ITEMS_PER_GROUP),
+      index: Math.floor(i / ITEMS_PER_GROUP),
+    });
+  }
 
   const toggleGroup = (groupIndex: number) => {
     setExpandedGroups(prev => {
@@ -1219,84 +1374,232 @@ function BoxDetailPanel({
         next.delete(groupIndex);
       } else {
         next.add(groupIndex);
-        if (streamingFieldState && onLoadFieldGroup && !streamingFieldState.entryGroups.has(groupIndex)) {
-          onLoadFieldGroup(groupIndex);
+      }
+      return next;
+    });
+  };
+
+  if (items.length <= ITEMS_PER_GROUP) {
+    return <span>{JSON.stringify(items)}</span>;
+  }
+
+  return (
+    <div className="field-groups">
+      {groups.map(group => {
+        const isExpanded = expandedGroups.has(group.index);
+        return (
+          <div key={group.index} className="field-group">
+            <div
+              className="field-group-header"
+              onClick={() => toggleGroup(group.index)}
+            >
+              <span className="group-toggle">{isExpanded ? '▼' : '▶'}</span>
+              <span className="group-range">
+                [{group.start} - {group.end}]
+              </span>
+              <span className="group-count">
+                ({group.values.length} 条)
+              </span>
+            </div>
+            {isExpanded && (
+              <div className="field-group-content">
+                {group.values.map((value, idx) => (
+                  <div key={idx} className="field-value-item">
+                    {Array.isArray(value)
+                      ? <ArrayValueViewer items={value} />
+                      : <span>{typeof value === 'string' ? value : JSON.stringify(value)}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function BoxDetailPanel({
+  node,
+  descriptionMode,
+  selectedField,
+  onFieldSelect,
+  streamingFieldState,
+  onLoadFieldGroup
+}: BoxDetailPanelProps) {
+  // 多级分组展开状态 - 使用 group ID 而不是索引
+  const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    setExpandedGroupIds(new Set()); // 重置展开状态
+  }, [node.boxType, node.offset, node.size]);
+
+  const handleFieldClick = (field: BoxField) => {
+    if (field.offset !== undefined && field.size !== undefined) {
+      if (selectedField === field) {
+        onFieldSelect(null);
+      } else {
+        onFieldSelect(field);
+      }
+    }
+  };
+
+  const toggleGroupNode = (groupId: string, group?: GroupNode) => {
+    setExpandedGroupIds(prev => {
+      const next = new Set(prev);
+      if (next.has(groupId)) {
+        next.delete(groupId);
+      } else {
+        next.add(groupId);
+        // 如果是流式模式的叶子节点，触发数据加载
+        if (group?.isLeaf && streamingFieldState && onLoadFieldGroup) {
+          const [start] = group.range;
+          const groupIndex = Math.floor(start / ITEMS_PER_GROUP);
+          if (!streamingFieldState.entryGroups.has(groupIndex)) {
+            onLoadFieldGroup(groupIndex);
+          }
         }
       }
       return next;
     });
   };
 
-  useEffect(() => {
-    if (!streamingFieldState || !onLoadFieldGroup || !streamingFieldState.entryCount) return;
-    expandedGroups.forEach(groupIndex => {
-      if (!streamingFieldState.entryGroups.has(groupIndex)) {
-        onLoadFieldGroup(groupIndex);
-      }
-    });
-  }, [expandedGroups, onLoadFieldGroup, streamingFieldState]);
-
   const headerFields = streamingFieldState?.headerFields ?? node.fields;
 
-  const streamingEntryGroups = useMemo(() => {
-    if (!streamingFieldState?.entryCount) return null;
-    const groups: { startIndex: number; endIndex: number; groupIndex: number }[] = [];
-    for (let i = 0; i < streamingFieldState.entryCount; i += ITEMS_PER_GROUP) {
-      const end = Math.min(i + ITEMS_PER_GROUP, streamingFieldState.entryCount);
+  // 调试日志
+  if (streamingFieldState) {
+    console.log(`[BoxDetailPanel] Rendering ${node.boxType}:`, {
+      isLoading: streamingFieldState.isLoading,
+      headerFieldsLength: streamingFieldState.headerFields?.length || 0,
+      nodeFieldsLength: node.fields?.length || 0,
+      finalHeaderFieldsLength: headerFields?.length || 0
+    });
+  }
+
+  // 动态多级分组数据结构
+  interface GroupNode {
+    id: string;
+    range: [number, number];
+    level: number;
+    isLeaf: boolean;
+    children?: GroupNode[];
+    entries?: BoxField[];
+    loaded?: boolean;
+  }
+
+  // 计算需要的层级深度
+  const calculateDepth = (totalItems: number, itemsPerGroup: number = ITEMS_PER_GROUP): number => {
+    if (totalItems <= itemsPerGroup) return 0;
+    return Math.ceil(Math.log(totalItems) / Math.log(itemsPerGroup));
+  };
+
+  // 递归生成分组树
+  const buildGroupTree = useCallback((
+    startIndex: number,
+    endIndex: number,
+    level: number,
+    parentId: string = ''
+  ): GroupNode[] => {
+    const totalItems = endIndex - startIndex + 1;
+
+    // 如果项目数小于等于阈值，这是叶子节点
+    if (totalItems <= ITEMS_PER_GROUP) {
+      return [{
+        id: `${parentId}-leaf-${startIndex}`,
+        range: [startIndex, endIndex],
+        level,
+        isLeaf: true,
+        loaded: false,
+      }];
+    }
+
+    // 需要分组
+    const groups: GroupNode[] = [];
+    const itemsPerSubGroup = Math.pow(ITEMS_PER_GROUP, level);
+
+    for (let i = startIndex; i <= endIndex; i += itemsPerSubGroup) {
+      const subEnd = Math.min(i + itemsPerSubGroup - 1, endIndex);
+      const groupId = `${parentId}-${level}-${i}`;
+
       groups.push({
-        startIndex: i,
-        endIndex: end - 1,
-        groupIndex: Math.floor(i / ITEMS_PER_GROUP),
+        id: groupId,
+        range: [i, subEnd],
+        level,
+        isLeaf: false,
+        children: buildGroupTree(i, subEnd, level - 1, groupId),
       });
     }
-    return groups;
-  }, [streamingFieldState]);
 
-  // 计算字段分组
-  const fieldGroups = useMemo(() => {
+    return groups;
+  }, []);
+
+  // 为流式模式生成分组树
+  const streamingGroupTree = useMemo(() => {
+    if (!streamingFieldState?.entryCount || streamingFieldState.entryCount <= ITEMS_PER_GROUP) {
+      return null;
+    }
+
+    const depth = calculateDepth(streamingFieldState.entryCount);
+    return buildGroupTree(0, streamingFieldState.entryCount - 1, depth);
+  }, [buildGroupTree, streamingFieldState?.entryCount]);
+
+  // 为非流式模式生成分组树
+  const fieldGroupTree = useMemo(() => {
     if (!node.fields || node.fields.length <= ITEMS_PER_GROUP) {
-      return null; // 不需要分组
+      return null;
     }
 
-    const groups: { startIndex: number; endIndex: number; fields: BoxField[] }[] = [];
-    for (let i = 0; i < node.fields.length; i += ITEMS_PER_GROUP) {
-      const end = Math.min(i + ITEMS_PER_GROUP, node.fields.length);
-      groups.push({
-        startIndex: i,
-        endIndex: end - 1,
-        fields: node.fields.slice(i, end),
+    const depth = calculateDepth(node.fields.length);
+    const tree = buildGroupTree(0, node.fields.length - 1, depth);
+
+    // 预加载所有叶子节点的数据（非流式模式）
+    const loadLeafData = (nodes: GroupNode[]) => {
+      nodes.forEach(node => {
+        if (node.isLeaf && !node.loaded) {
+          const [start, end] = node.range;
+          node.entries = (headerFields || []).slice(start, end + 1);
+          node.loaded = true;
+        } else if (node.children) {
+          loadLeafData(node.children);
+        }
       });
-    }
-    return groups;
-  }, [node.fields, streamingFieldState]);
+    };
 
-  // 渲染字段表格
-  const renderFieldsTable = (fields: BoxField[], keyPrefix: string = '') => (
+    loadLeafData(tree);
+    return tree;
+  }, [buildGroupTree, headerFields, node.fields]);
+
+  // 渲染字段表格（需要在 renderGroupTree 之前定义）
+  const renderFieldsTable = useCallback((fields: BoxField[], keyPrefix: string = '') => (
     <table>
       <thead>
         <tr>
           <th>字段名</th>
           <th>值</th>
-          <th>位置</th>
-          {descriptionMode !== 'hidden' && <th>说明</th>}
+          <th>偏移</th>
+          {descriptionMode === 'always' && <th>说明</th>}
+          {descriptionMode === 'hover' && <th></th>}
         </tr>
       </thead>
       <tbody>
-        {fields.map((field, i) => {
-          const hasOffset = field.offset !== undefined && field.size !== undefined;
+        {fields.map((field, index) => {
+          const isClickable = field.offset !== undefined && field.size !== undefined;
           const isSelected = selectedField === field;
+          const arrayValue = parseArrayValue(field.value);
 
           return (
             <tr
-              key={`${keyPrefix}${i}`}
-              className={`${hasOffset ? 'clickable' : ''} ${isSelected ? 'selected' : ''}`}
-              onClick={() => handleFieldClick(field)}
+              key={keyPrefix + index}
+              className={`${isClickable ? 'clickable' : ''} ${isSelected ? 'selected' : ''}`}
+              onClick={() => isClickable && handleFieldClick(field)}
               title={descriptionMode === 'hover' ? field.description : undefined}
             >
               <td className="field-name">{field.name}</td>
-              <td className="field-value">{field.value}</td>
+              <td className="field-value">
+                {arrayValue ? <ArrayValueViewer items={arrayValue} /> : field.value}
+              </td>
               <td className="field-offset">
-                {hasOffset ? (
+                {field.offset !== undefined && field.size !== undefined ? (
                   <span className="offset-badge">
                     +{field.offset} ({field.size}B)
                   </span>
@@ -1315,7 +1618,83 @@ function BoxDetailPanel({
         })}
       </tbody>
     </table>
-  );
+  ), [descriptionMode, handleFieldClick, selectedField]);
+
+  // 递归渲染分组树
+  const renderGroupTree = useCallback((
+    groups: GroupNode[],
+    depth: number = 0
+  ): React.ReactNode => {
+    return groups.map(group => {
+      const isExpanded = expandedGroupIds.has(group.id);
+      const [start, end] = group.range;
+      const itemCount = end - start + 1;
+
+      // 渲染叶子节点（实际数据）
+      if (group.isLeaf) {
+        // 获取条目数据
+        let entries: BoxField[] | undefined;
+
+        if (group.entries) {
+          // 非流式模式：已预加载
+          entries = group.entries;
+        } else if (streamingFieldState) {
+          // 流式模式：从缓存获取
+          const groupIndex = Math.floor(start / ITEMS_PER_GROUP);
+          entries = streamingFieldState.entryGroups.get(groupIndex);
+        }
+
+        const isLoading = streamingFieldState?.loadingGroups.has(Math.floor(start / ITEMS_PER_GROUP));
+
+        return (
+          <div key={group.id} className="field-group" style={{ marginLeft: `${depth * 20}px` }}>
+            <div
+              className="field-group-header"
+              onClick={() => toggleGroupNode(group.id, group)}
+              style={{ cursor: 'pointer' }}
+            >
+              <span className="group-toggle">{isExpanded ? '▼' : '▶︎'}</span>
+              <span className="group-title">
+                条目 [{start.toLocaleString()} - {end.toLocaleString()}]
+                <span className="group-count">({itemCount} 项)</span>
+              </span>
+              {isLoading && <span className="group-loading">加载中...</span>}
+            </div>
+            {isExpanded && entries && entries.length > 0 && (
+              <div className="field-group-content">
+                {renderFieldsTable(entries, `${group.id}-`)}
+              </div>
+            )}
+            {isExpanded && (!entries || entries.length === 0) && !isLoading && (
+              <div className="field-group-empty">暂无数据</div>
+            )}
+          </div>
+        );
+      }
+
+      // 渲染中间节点（分组）
+      return (
+        <div key={group.id} className="field-supergroup" style={{ marginLeft: `${depth * 20}px` }}>
+          <div
+            className="field-supergroup-header"
+            onClick={() => toggleGroupNode(group.id)}
+            style={{ cursor: 'pointer', fontWeight: 600 - depth * 100 }}
+          >
+            <span className="group-toggle">{isExpanded ? '▼' : '▶︎'}</span>
+            <span className="group-title">
+              范围 [{start.toLocaleString()} - {end.toLocaleString()}]
+              <span className="group-count">({itemCount.toLocaleString()} 项)</span>
+            </span>
+          </div>
+          {isExpanded && group.children && (
+            <div className="field-supergroup-content">
+              {renderGroupTree(group.children, depth + 1)}
+            </div>
+          )}
+        </div>
+      );
+    });
+  }, [expandedGroupIds, renderFieldsTable, streamingFieldState, toggleGroupNode]);
 
   return (
     <div className="box-detail-panel">
@@ -1346,36 +1725,13 @@ function BoxDetailPanel({
             <span className="field-hint">(点击可高亮)</span>
           </h5>
 
-          {fieldGroups ? (
-            // 分??示
+          {fieldGroupTree ? (
+            // 多级分组显示
             <div className="field-groups">
-              {fieldGroups.map((group, groupIndex) => {
-                const isExpanded = expandedGroups.has(groupIndex);
-                return (
-                  <div key={groupIndex} className="field-group">
-                    <div
-                      className="field-group-header"
-                      onClick={() => toggleGroup(groupIndex)}
-                    >
-                      <span className="group-toggle">{isExpanded ? '▼' : '▶'}</span>
-                      <span className="group-range">
-                        [{group.startIndex} - {group.endIndex}]
-                      </span>
-                      <span className="group-count">
-                        ({group.fields.length} 条)
-                      </span>
-                    </div>
-                    {isExpanded && (
-                      <div className="field-group-content">
-                        {renderFieldsTable(group.fields, `group-${groupIndex}-`)}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+              {renderGroupTree(fieldGroupTree)}
             </div>
           ) : (
-            // 不需要分?，直接?示
+            // 不需要分组，直接显示
             renderFieldsTable(node.fields)
           )}
         </div>
@@ -1397,51 +1753,20 @@ function BoxDetailPanel({
               {renderFieldsTable(headerFields)}
             </div>
           )}
-          {streamingEntryGroups && streamingEntryGroups.length > 0 && (
+          {streamingGroupTree && (
             <div className="box-detail-fields">
               <h5>
-                数组条目 ({streamingFieldState.entryCount} 条)
-                <span className="field-hint">(分组加载)</span>
+                条目列表 ({streamingFieldState.entryCount?.toLocaleString() || 0} 条)
+                <span className="field-hint">(多级分组)</span>
               </h5>
               <div className="field-groups">
-                {streamingEntryGroups.map(group => {
-                  const isExpanded = expandedGroups.has(group.groupIndex);
-                  const groupFields = streamingFieldState.entryGroups.get(group.groupIndex) ?? [];
-                  const isLoadingGroup = streamingFieldState.loadingGroups.has(group.groupIndex);
-                  return (
-                    <div key={group.groupIndex} className="field-group">
-                      <div
-                        className="field-group-header"
-                        onClick={() => toggleGroup(group.groupIndex)}
-                      >
-                        <span className="group-toggle">{isExpanded ? '▼' : '▶'}</span>
-                        <span className="group-range">
-                          [{group.startIndex} - {group.endIndex}]
-                        </span>
-                        <span className="group-count">
-                          ({group.endIndex - group.startIndex + 1} 条)
-                        </span>
-                      </div>
-                      {isExpanded && (
-                        <div className="field-group-content">
-                          {groupFields.length > 0
-                            ? renderFieldsTable(groupFields, `stream-${group.groupIndex}-`)
-                            : (
-                              <div className="field-group-empty">
-                                {isLoadingGroup ? '加载中...' : '暂无数据'}
-                              </div>
-                            )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                {renderGroupTree(streamingGroupTree)}
               </div>
             </div>
           )}
           {!streamingFieldState.isLoading
             && (!headerFields || headerFields.length === 0)
-            && (!streamingEntryGroups || streamingEntryGroups.length === 0) && (
+            && !streamingGroupTree && (
               <div className="box-detail-fields">
                 <div className="field-group-empty">暂无可显示的字段信息</div>
               </div>

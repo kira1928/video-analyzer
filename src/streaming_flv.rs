@@ -2,11 +2,13 @@
 //!
 //! 支持按需读取大文件，不需要将整个文件加载到内存
 
+use crate::analyzer::extract_sps_pps_from_avcc;
 use crate::container::Codec;
 use crate::types::*;
 use js_sys::{Function, Promise, Uint8Array};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
+use std::cell::RefCell;
 
 /// FLV 文件头大小
 const FLV_HEADER_SIZE: u64 = 9;
@@ -38,6 +40,12 @@ struct TagMetadata {
     is_keyframe: bool,
     is_seq_header: bool,
     codec_id: Option<u8>,
+    is_sps_pps_change: bool,
+}
+
+struct CachedChunk {
+    offset: u64,
+    data: Vec<u8>,
 }
 
 /// 流式 FLV 解析器
@@ -45,6 +53,7 @@ struct TagMetadata {
 pub struct StreamingFlvParser {
     file_size: u64,
     read_callback: Function,
+    cache: RefCell<Option<CachedChunk>>,
     tags: Vec<TagMetadata>,
     // 容器信息
     duration_ms: u64,
@@ -57,6 +66,9 @@ pub struct StreamingFlvParser {
     // 初始化数据偏移
     video_init_offset: Option<u64>,
     video_init_size: Option<u32>,
+    // 初始化数据缓存（用于流式 GOP 解码等）
+    video_init_data: Option<Vec<u8>>,
+    audio_init_data: Option<Vec<u8>>,
 }
 
 #[wasm_bindgen]
@@ -67,6 +79,7 @@ impl StreamingFlvParser {
         Self {
             file_size: file_size as u64,
             read_callback,
+            cache: RefCell::new(None),
             tags: Vec::new(),
             duration_ms: 0,
             has_video: false,
@@ -77,6 +90,8 @@ impl StreamingFlvParser {
             height: None,
             video_init_offset: None,
             video_init_size: None,
+            video_init_data: None,
+            audio_init_data: None,
         }
     }
 
@@ -120,7 +135,7 @@ impl StreamingFlvParser {
 
     /// 读取指定 tag 的数据
     #[wasm_bindgen]
-    pub async fn read_tag_data(&self, tag_index: usize) -> Result<Uint8Array, JsError> {
+    pub async fn read_tag_data(&mut self, tag_index: usize) -> Result<Uint8Array, JsError> {
         if tag_index >= self.tags.len() {
             return Err(JsError::new("Tag 索引超出范围"));
         }
@@ -136,7 +151,7 @@ impl StreamingFlvParser {
 
     /// 读取视频初始化数据 (Sequence Header)
     #[wasm_bindgen]
-    pub async fn read_video_init_data(&self) -> Result<Uint8Array, JsError> {
+    pub async fn read_video_init_data(&mut self) -> Result<Uint8Array, JsError> {
         if let (Some(offset), Some(size)) = (self.video_init_offset, self.video_init_size) {
             let data = self
                 .read_range(offset, size as usize)
@@ -152,9 +167,36 @@ impl StreamingFlvParser {
 impl StreamingFlvParser {
     /// 读取指定范围的数据
     async fn read_range(&self, offset: u64, length: usize) -> Result<Vec<u8>, String> {
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+
+        if let Some(cache) = self.cache.borrow().as_ref() {
+            let cache_end = cache.offset + cache.data.len() as u64;
+            if offset >= cache.offset && offset + length as u64 <= cache_end {
+                let start = (offset - cache.offset) as usize;
+                return Ok(cache.data[start..start + length].to_vec());
+            }
+        }
+
+        const CACHE_CHUNK_BYTES: usize = 512 * 1024; // 512KB
+        let remaining = if offset >= self.file_size {
+            0
+        } else {
+            (self.file_size - offset) as usize
+        };
+        if remaining == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut request_len = length.min(remaining);
+        if request_len < CACHE_CHUNK_BYTES {
+            request_len = CACHE_CHUNK_BYTES.min(remaining);
+        }
+
         let this = JsValue::NULL;
         let offset_js = JsValue::from(offset as f64);
-        let length_js = JsValue::from(length as f64);
+        let length_js = JsValue::from(request_len as f64);
 
         let promise = self
             .read_callback
@@ -167,7 +209,13 @@ impl StreamingFlvParser {
             .map_err(|e| format!("读取数据失败: {:?}", e))?;
 
         let array = Uint8Array::new(&result);
-        Ok(array.to_vec())
+        let data = array.to_vec();
+
+        if request_len <= CACHE_CHUNK_BYTES {
+            *self.cache.borrow_mut() = Some(CachedChunk { offset, data: data.clone() });
+        }
+
+        Ok(data[..length.min(data.len())].to_vec())
     }
 
     /// 解析 FLV 头部
@@ -199,6 +247,8 @@ impl StreamingFlvParser {
         // 跳过 FLV 头部和第一个 PreviousTagSize
         let mut pos = FLV_HEADER_SIZE + PREV_TAG_SIZE;
         let mut last_timestamp = 0u32;
+        let mut last_sps_data: Option<Vec<u8>> = None;
+        let mut last_pps_data: Option<Vec<u8>> = None;
 
         while pos + FLV_TAG_HEADER_SIZE <= self.file_size {
             // 读取 tag 头部
@@ -231,6 +281,7 @@ impl StreamingFlvParser {
             let mut is_keyframe = false;
             let mut is_seq_header = false;
             let mut codec_id = None;
+            let mut is_sps_pps_change = false;
 
             if data_size > 0 && (tag_type == TAG_TYPE_VIDEO || tag_type == TAG_TYPE_AUDIO) {
                 // 读取第一个字节来获取更多信息
@@ -261,6 +312,41 @@ impl StreamingFlvParser {
                                     self.video_init_offset = Some(data_offset);
                                     self.video_init_size = Some(data_size);
                                 }
+
+                                if data_size > 5 {
+                                    let raw = self
+                                        .read_range(data_offset, data_size as usize)
+                                        .await
+                                        .map_err(|e| JsError::new(&e))?;
+                                    if raw.len() > 5 {
+                                        let config = raw[5..].to_vec();
+                                        if self.video_init_data.is_none() {
+                                            self.video_init_data = Some(config.clone());
+                                        }
+
+                                        let (current_sps, current_pps) =
+                                            extract_sps_pps_from_avcc(&config);
+                                        let sps_changed = match (&last_sps_data, &current_sps) {
+                                            (Some(prev), Some(curr)) => prev != curr,
+                                            (None, Some(_)) => false,
+                                            _ => false,
+                                        };
+                                        let pps_changed = match (&last_pps_data, &current_pps) {
+                                            (Some(prev), Some(curr)) => prev != curr,
+                                            (None, Some(_)) => false,
+                                            _ => false,
+                                        };
+                                        if sps_changed || pps_changed {
+                                            is_sps_pps_change = true;
+                                        }
+                                        if current_sps.is_some() {
+                                            last_sps_data = current_sps;
+                                        }
+                                        if current_pps.is_some() {
+                                            last_pps_data = current_pps;
+                                        }
+                                    }
+                                }
                             }
                         }
 
@@ -273,6 +359,27 @@ impl StreamingFlvParser {
 
                         if self.audio_codec.is_none() {
                             self.audio_codec = Some(audio_format);
+                        }
+
+                        if data_size >= 2 {
+                            let second_byte = self
+                                .read_range(data_offset + 1, 1)
+                                .await
+                                .map_err(|e| JsError::new(&e))?;
+                            if !second_byte.is_empty() && second_byte[0] == 0 {
+                                if data_size > 2 {
+                                    let raw = self
+                                        .read_range(data_offset, data_size as usize)
+                                        .await
+                                        .map_err(|e| JsError::new(&e))?;
+                                    if raw.len() > 2 {
+                                        let config = raw[2..].to_vec();
+                                        if self.audio_init_data.is_none() {
+                                            self.audio_init_data = Some(config);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -287,6 +394,7 @@ impl StreamingFlvParser {
                 is_keyframe,
                 is_seq_header,
                 codec_id,
+                is_sps_pps_change,
             });
 
             // 移动到下一个 tag
@@ -426,7 +534,7 @@ impl StreamingFlvParser {
                 description: Some(description),
                 mp4_info: None,
                 has_sei: false,           // 流式模式暂不检测 SEI
-                is_sps_pps_change: false, // 流式模式暂不检测
+                is_sps_pps_change: tag.is_sps_pps_change,
             };
 
             tags.push(tag_summary);
@@ -468,9 +576,9 @@ impl StreamingFlvParser {
             script_tag_count,
             keyframe_count,
             anomalies: Vec::new(),
-            video_init_data: None,      // 流式模式下按需获取
+            video_init_data: self.video_init_data.clone(),
             video_init_data_list: None, // FLV 不支持多配置
-            audio_init_data: None,
+            audio_init_data: self.audio_init_data.clone(),
             segments: None,
         };
 
@@ -602,7 +710,7 @@ impl StreamingFlvParser {
                 description: Some(description),
                 mp4_info: None,
                 has_sei: false,
-                is_sps_pps_change: false,
+                is_sps_pps_change: tag.is_sps_pps_change,
             });
         }
 
@@ -629,9 +737,9 @@ impl StreamingFlvParser {
             script_tag_count,
             keyframe_count,
             anomalies: Vec::new(),
-            video_init_data: None,
+            video_init_data: self.video_init_data.clone(),
             video_init_data_list: None,
-            audio_init_data: None,
+            audio_init_data: self.audio_init_data.clone(),
             segments: None,
         };
 

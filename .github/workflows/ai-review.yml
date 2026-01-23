@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run AI Review Relay
-        uses: kira1928/ai-review-relay@v1.2.0
+        uses: kira1928/ai-review-relay@v1.2.1
         with:
           dev_ai: 'jules'
           jules_token: ${{ secrets.JULES_TOKEN }}

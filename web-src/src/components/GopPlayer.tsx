@@ -4,6 +4,7 @@ import { getWasmModule } from '../utils/wasm';
 import { formatDuration } from '../utils/format';
 import { saveFrame, loadCachedFrame, saveAudioBuffer, loadAudioBuffer } from '../utils/gopCache';
 import { wasmWorker } from '../workers/wasmWorkerManager';
+import { yieldToMain } from '../utils/yieldToMain';
 import '../styles/GopPlayer.css';
 
 interface GopPlayerProps {
@@ -844,8 +845,8 @@ export function GopPlayer({
     if (initialTagIndex !== undefined && thumbnails.length > 0) {
       const idx = thumbnails.findIndex(t => t.tagIndex === initialTagIndex);
       if (idx !== -1) {
-        // 使用 setTimeout 确保 UI 响应
-        setTimeout(() => handleThumbnailClick(initialTagIndex, idx), 0);
+        // 使用 yieldToMain 确保 UI 响应
+        yieldToMain().then(() => handleThumbnailClick(initialTagIndex, idx));
       }
     }
   }, [initialTagIndex, thumbnails, handleThumbnailClick]);
@@ -897,7 +898,7 @@ export function GopPlayer({
         setIsPlaying(false);
         if (autoPlayNext && onNextGop) {
           console.log("Auto-playing next GOP...");
-          setTimeout(() => onNextGop(true), 100);
+          yieldToMain().then(() => onNextGop(true));
         }
         return;
       }
@@ -1050,11 +1051,11 @@ export function GopPlayer({
               if (initialTagIndex !== undefined) {
                 const idx = loadedThumbs.findIndex(t => t.tagIndex === initialTagIndex);
                 if (idx !== -1) {
-                  setTimeout(() => handleThumbnailClick(initialTagIndex, idx), 50);
+                  yieldToMain().then(() => handleThumbnailClick(initialTagIndex, idx));
                 }
               } else if (loadedThumbs.length > 0) {
                 // 显示第一帧，但不自动播放（等待用户点击播放按钮）
-                setTimeout(() => handleThumbnailClick(loadedThumbs[0].tagIndex, 0), 50);
+                yieldToMain().then(() => handleThumbnailClick(loadedThumbs[0].tagIndex, 0));
               }
             }
           } catch (e) {
@@ -1393,7 +1394,10 @@ export function GopPlayer({
       if (frameQueueRef.current.length > MAX_QUEUE_SIZE) {
         while (frameQueueRef.current.length > MAX_QUEUE_SIZE * 0.8) {
           if (signal.aborted) break;
-          await new Promise(r => setTimeout(r, 10));
+          await Promise.race([
+            yieldToMain(),
+            new Promise<void>(resolve => setTimeout(resolve, 10)),
+          ]);
         }
       }
 

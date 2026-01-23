@@ -6,6 +6,7 @@ import { clearCache, getCacheStats, isCacheEnabled, setCacheEnabled, CacheStats 
 import { detectFileFormat, STREAMING_THRESHOLD, formatFileSize } from './utils/streamingReader';
 import { clearAllCaches } from './utils/memoryDebug';
 import { wasmWorker } from './workers/wasmWorkerManager';
+import { yieldToMain } from './utils/yieldToMain';
 import { TimelineChart } from './components/TimelineChart';
 import { DetailModal } from './components/DetailModal';
 import { GopPlayer } from './components/GopPlayer';
@@ -286,7 +287,7 @@ function App() {
         console.log(`使用 Worker 流式解析模式 (文件大小: ${formatFileSize(file.size)}, 格式: ${format})`);
 
         // 强制让 UI 有时间渲染进度条
-        await new Promise(r => setTimeout(r, 100));
+        await yieldToMain();
 
         let metadata: any;  // 元数据（不包含全部 tags/gops）
         if (format === 'mp4') {

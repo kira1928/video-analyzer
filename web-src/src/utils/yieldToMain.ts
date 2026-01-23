@@ -18,6 +18,6 @@ export function yieldToMain(): Promise<void> {
       setTimeout(resolve, 0);
       return;
     }
-    requestAnimationFrame(() => resolve());
+    requestAnimationFrame(() => setTimeout(resolve, 0));
   });
 }

@@ -3,7 +3,6 @@
 //! 解析 MP4 文件的 box 结构，生成用于前端显示的树形数据
 
 use serde::Serialize;
-use std::collections::HashMap;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
 /// MP4 Box 节点 - 用于前端树形展示
@@ -438,7 +437,7 @@ fn parse_ftyp_fields<R: Read>(reader: &mut R, size: u64) -> Option<Vec<BoxField>
     // 兼容品牌列表
     let compat_count = ((size - 8) / 4) as usize;
     let mut compat_brands = Vec::new();
-    for i in 0..compat_count {
+    for _i in 0..compat_count {
         let mut compat = [0u8; 4];
         if reader.read_exact(&mut compat).is_err() {
             break;
@@ -1257,7 +1256,7 @@ fn parse_mdat_fields<R: Read + Seek>(
                 let name = match hevc_type {
                     0..=9 => "VCL (TRAIL)",
                     10..=15 => "VCL (TSA/STSA)",
-                    16..=21 => "VCL (BLA/IDR/CRA)",
+                    16..=18 => "VCL (BLA/IDR/CRA)",
                     19 => "IDR_W_RADL",
                     20 => "IDR_N_LP",
                     21 => "CRA_NUT",
@@ -1642,12 +1641,12 @@ fn parse_hvcc_fields<R: Read>(reader: &mut R, size: u64) -> Option<Vec<BoxField>
     let mut offset = 23usize;
 
     // 解析参数集数组
-    for array_idx in 0..num_of_arrays {
+    for _array_idx in 0..num_of_arrays {
         if offset + 3 > data.len() {
             break;
         }
 
-        let array_completeness = (data[offset] >> 7) & 0x01;
+        let _array_completeness = (data[offset] >> 7) & 0x01;
         let nal_unit_type = data[offset] & 0x3F;
         offset += 1;
 

@@ -22,16 +22,20 @@ const STREAM_TYPE_H264: u8 = 0x1B;
 const STREAM_TYPE_H265: u8 = 0x24;
 const STREAM_TYPE_AAC: u8 = 0x0F;
 const STREAM_TYPE_MP3: u8 = 0x03;
+#[allow(dead_code)]
 const STREAM_TYPE_AC3: u8 = 0x81;
 
 /// PES 重组缓冲区
 #[derive(Debug, Clone)]
 struct PesBuffer {
+    #[allow(dead_code)]
     pid: u16,
+    #[allow(dead_code)]
     stream_type: u8,
     data: Vec<u8>,
     pts: Option<u64>,
     dts: Option<u64>,
+    #[allow(dead_code)]
     is_complete: bool,
     offset: u64, // 第一个包的偏移
 }
@@ -39,7 +43,9 @@ struct PesBuffer {
 /// 流信息
 #[derive(Debug, Clone)]
 struct StreamInfo {
+    #[allow(dead_code)]
     pid: u16,
+    #[allow(dead_code)]
     stream_type: u8,
     codec: Codec,
 }
@@ -125,13 +131,13 @@ impl<R: Read + Seek> TsContainer<R> {
         
         let header = &buf[ts_start..ts_start + 4];
         
-        let transport_error = (header[1] & 0x80) != 0;
+        let _transport_error = (header[1] & 0x80) != 0;
         let payload_start = (header[1] & 0x40) != 0;
-        let priority = (header[1] & 0x20) != 0;
+        let _priority = (header[1] & 0x20) != 0;
         let pid = ((header[1] as u16 & 0x1F) << 8) | header[2] as u16;
-        let scrambling = (header[3] >> 6) & 0x03;
+        let _scrambling = (header[3] >> 6) & 0x03;
         let adaptation_field = (header[3] >> 4) & 0x03;
-        let continuity = header[3] & 0x0F;
+        let _continuity = header[3] & 0x0F;
         
         let mut payload_offset = ts_start + 4;
         
@@ -260,7 +266,7 @@ impl<R: Read + Seek> TsContainer<R> {
     fn process_pes(&mut self, pid: u16, payload: &[u8], payload_start: bool, offset: u64) {
         if payload_start {
             // 完成之前的 PES
-            if let Some(mut buffer) = self.pes_buffers.remove(&pid) {
+            if let Some(buffer) = self.pes_buffers.remove(&pid) {
                 if !buffer.data.is_empty() {
                     if let Some(sample) = self.create_sample_from_pes(&buffer) {
                         self.pending_samples.push(sample);

@@ -1626,7 +1626,7 @@ pub fn parse_hevc_sps(nalu_data: &[u8]) -> Vec<TagField> {
 
     // profile_tier_level
     // general_profile_space (2 bits)
-    let profile_space = read_bits(nalu_data, &mut bit_offset, 2).unwrap_or(0);
+    let _profile_space = read_bits(nalu_data, &mut bit_offset, 2).unwrap_or(0);
     // general_tier_flag (1 bit)
     let tier_flag = read_bits(nalu_data, &mut bit_offset, 1).unwrap_or(0);
     // general_profile_idc (5 bits)

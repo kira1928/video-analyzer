@@ -2,7 +2,7 @@
 //!
 //! 支持按需读取大文件，不需要将整个文件加载到内存
 
-use crate::container::{Codec, ContainerFormat};
+use crate::container::Codec;
 use crate::mp4_box::{
     fourcc_to_string, get_box_description, is_container_box, is_sample_entry_box, is_stsd_box,
     parse_box_fields, BoxField, Mp4BoxNode, Mp4BoxTree,
@@ -15,24 +15,43 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 /// Box 类型常量
+#[allow(dead_code)]
 const BOX_FTYP: [u8; 4] = *b"ftyp";
+#[allow(dead_code)]
 const BOX_MOOV: [u8; 4] = *b"moov";
+#[allow(dead_code)]
 const BOX_MDAT: [u8; 4] = *b"mdat";
+#[allow(dead_code)]
 const BOX_MVHD: [u8; 4] = *b"mvhd";
+#[allow(dead_code)]
 const BOX_TRAK: [u8; 4] = *b"trak";
+#[allow(dead_code)]
 const BOX_TKHD: [u8; 4] = *b"tkhd";
+#[allow(dead_code)]
 const BOX_MDIA: [u8; 4] = *b"mdia";
+#[allow(dead_code)]
 const BOX_MINF: [u8; 4] = *b"minf";
+#[allow(dead_code)]
 const BOX_STBL: [u8; 4] = *b"stbl";
+#[allow(dead_code)]
 const BOX_STSD: [u8; 4] = *b"stsd";
+#[allow(dead_code)]
 const BOX_STTS: [u8; 4] = *b"stts";
+#[allow(dead_code)]
 const BOX_STSC: [u8; 4] = *b"stsc";
+#[allow(dead_code)]
 const BOX_STSZ: [u8; 4] = *b"stsz";
+#[allow(dead_code)]
 const BOX_STCO: [u8; 4] = *b"stco";
+#[allow(dead_code)]
 const BOX_CO64: [u8; 4] = *b"co64";
+#[allow(dead_code)]
 const BOX_STSS: [u8; 4] = *b"stss";
+#[allow(dead_code)]
 const BOX_CTTS: [u8; 4] = *b"ctts";
+#[allow(dead_code)]
 const BOX_MDHD: [u8; 4] = *b"mdhd";
+#[allow(dead_code)]
 const BOX_HDLR: [u8; 4] = *b"hdlr";
 const BOX_AVCC: [u8; 4] = *b"avcC";
 const BOX_HVCC: [u8; 4] = *b"hvcC";
@@ -1296,7 +1315,9 @@ struct StreamingTrack {
     width: Option<u32>,
     height: Option<u32>,
     // 初始化数据偏移和大小
+    #[allow(dead_code)]
     init_data_offset: Option<u64>,
+    #[allow(dead_code)]
     init_data_size: Option<u32>,
     // 初始化数据列表（与 stsd entry 对齐）
     init_data_list: Vec<Vec<u8>>,
@@ -1527,7 +1548,7 @@ impl StreamingMp4Parser {
     }
 
     /// 解析 moov box 内容
-    fn parse_moov(&mut self, data: &[u8], base_offset: u64) -> Result<(), JsError> {
+    fn parse_moov(&mut self, data: &[u8], _base_offset: u64) -> Result<(), JsError> {
         let mut pos = 0usize;
 
         while pos + 8 <= data.len() {

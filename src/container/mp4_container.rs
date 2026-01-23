@@ -10,28 +10,51 @@ use super::{
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
 /// MP4 Box 类型
+#[allow(dead_code)]
 const BOX_FTYP: [u8; 4] = *b"ftyp";
+#[allow(dead_code)]
 const BOX_MOOV: [u8; 4] = *b"moov";
+#[allow(dead_code)]
 const BOX_MDAT: [u8; 4] = *b"mdat";
+#[allow(dead_code)]
 const BOX_TRAK: [u8; 4] = *b"trak";
+#[allow(dead_code)]
 const BOX_MDIA: [u8; 4] = *b"mdia";
+#[allow(dead_code)]
 const BOX_MINF: [u8; 4] = *b"minf";
+#[allow(dead_code)]
 const BOX_STBL: [u8; 4] = *b"stbl";
+#[allow(dead_code)]
 const BOX_STSD: [u8; 4] = *b"stsd";
+#[allow(dead_code)]
 const BOX_STTS: [u8; 4] = *b"stts";
+#[allow(dead_code)]
 const BOX_STSC: [u8; 4] = *b"stsc";
+#[allow(dead_code)]
 const BOX_STSZ: [u8; 4] = *b"stsz";
+#[allow(dead_code)]
 const BOX_STCO: [u8; 4] = *b"stco";
+#[allow(dead_code)]
 const BOX_CO64: [u8; 4] = *b"co64";
+#[allow(dead_code)]
 const BOX_STSS: [u8; 4] = *b"stss";
+#[allow(dead_code)]
 const BOX_CTTS: [u8; 4] = *b"ctts";
+#[allow(dead_code)]
 const BOX_MDHD: [u8; 4] = *b"mdhd";
+#[allow(dead_code)]
 const BOX_HDLR: [u8; 4] = *b"hdlr";
+#[allow(dead_code)]
 const BOX_AVC1: [u8; 4] = *b"avc1";
+#[allow(dead_code)]
 const BOX_HVC1: [u8; 4] = *b"hvc1";
+#[allow(dead_code)]
 const BOX_HEV1: [u8; 4] = *b"hev1";
+#[allow(dead_code)]
 const BOX_MP4A: [u8; 4] = *b"mp4a";
+#[allow(dead_code)]
 const BOX_AVCC: [u8; 4] = *b"avcC";
+#[allow(dead_code)]
 const BOX_HVCC: [u8; 4] = *b"hvcC";
 
 /// 轨道类型
@@ -86,7 +109,9 @@ pub struct Mp4Container<R: Read + Seek> {
     info: Option<ContainerInfo>,
     tracks: Vec<Track>,
     // 当前播放位置
+    #[allow(dead_code)]
     current_track_idx: usize,
+    #[allow(dead_code)]
     current_sample_idx: usize,
     // 合并后的 sample 列表（按时间排序）
     merged_samples: Vec<(usize, usize)>, // (track_idx, sample_idx)
@@ -172,7 +197,7 @@ impl<R: Read + Seek> Mp4Container<R> {
                 (size, 8u64)
             };
 
-            let box_start = pos;
+            let _box_start = pos;
             let box_end = pos + box_size;
             let content_start = pos + header_size;
 

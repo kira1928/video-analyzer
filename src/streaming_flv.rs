@@ -3,7 +3,6 @@
 //! 支持按需读取大文件，不需要将整个文件加载到内存
 
 use crate::analyzer::extract_sps_pps_from_avcc;
-use crate::container::Codec;
 use crate::types::*;
 use js_sys::{Function, Promise, Uint8Array};
 use wasm_bindgen::prelude::*;
@@ -24,6 +23,7 @@ const TAG_TYPE_SCRIPT: u8 = 18;
 
 /// 轨道类型
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)]
 enum TrackType {
     Video,
     Audio,
@@ -61,7 +61,9 @@ pub struct StreamingFlvParser {
     has_audio: bool,
     video_codec: Option<u8>,
     audio_codec: Option<u8>,
+    #[allow(dead_code)]
     width: Option<u32>,
+    #[allow(dead_code)]
     height: Option<u32>,
     // 初始化数据偏移
     video_init_offset: Option<u64>,
@@ -549,13 +551,13 @@ impl StreamingFlvParser {
             }
         }
 
-        let video_codec_str = match self.video_codec {
+        let _video_codec_str = match self.video_codec {
             Some(7) => Some("H264".to_string()),
             Some(12) => Some("H265".to_string()),
             _ => None,
         };
 
-        let audio_codec_str = match self.audio_codec {
+        let _audio_codec_str = match self.audio_codec {
             Some(10) => Some("AAC".to_string()),
             Some(2) => Some("MP3".to_string()),
             _ => None,

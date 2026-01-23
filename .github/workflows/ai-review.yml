@@ -3,8 +3,6 @@ name: AI Review Relay
 on:
   pull_request_review:
     types: [submitted]
-  pull_request_review_comment:
-    types: [created]
   workflow_dispatch:
     inputs:
       pr_number:

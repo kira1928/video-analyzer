@@ -216,7 +216,7 @@ impl StreamingFlvParser {
             *self.cache.borrow_mut() = Some(CachedChunk { offset, data });
             Ok(ret)
         } else {
-            Ok(data[..length.min(data.len())].to_vec())
+            Ok(data)
         }
     }
 

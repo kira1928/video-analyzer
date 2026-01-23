@@ -1,9 +1,10 @@
 /**
- * Yields to the main thread to allow the browser to process UI updates and other tasks.
- * This is a more efficient and reliable way to prevent long-running tasks from blocking
- * the UI than using `setTimeout(..., 0)`.
+ * Yields to the main thread to allow the browser to paint UI updates.
+ * This is useful for ensuring UI changes are rendered before a long-running task.
+ * It uses `requestAnimationFrame` and `setTimeout(0)` to resolve the promise
+ * *after* the next paint cycle.
  *
- * @returns A promise that resolves on the next animation frame.
+ * @returns A promise that resolves after the next browser paint.
  */
 export function yieldToMain(): Promise<void> {
   return new Promise(resolve => {
@@ -18,6 +19,6 @@ export function yieldToMain(): Promise<void> {
       setTimeout(resolve, 0);
       return;
     }
-    requestAnimationFrame(() => resolve());
+    requestAnimationFrame(() => setTimeout(resolve, 0));
   });
 }

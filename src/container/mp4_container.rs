@@ -799,7 +799,7 @@ impl<R: Read + Seek> Mp4Container<R> {
     }
 }
 
-impl<R: Read + Seek + 'static> ContainerReader for Mp4Container<R> {
+impl<R: Read + Seek> ContainerReader for Mp4Container<R> {
     fn read_info(&mut self) -> Result<ContainerInfo, String> {
         self.parse()?;
 
@@ -970,6 +970,12 @@ impl<R: Read + Seek + 'static> ContainerReader for Mp4Container<R> {
 
 impl Mp4Container<Cursor<Vec<u8>>> {
     pub fn from_bytes(data: Vec<u8>) -> Self {
+        Self::new(Cursor::new(data))
+    }
+}
+
+impl<'a> Mp4Container<Cursor<&'a [u8]>> {
+    pub fn from_slice(data: &'a [u8]) -> Self {
         Self::new(Cursor::new(data))
     }
 }

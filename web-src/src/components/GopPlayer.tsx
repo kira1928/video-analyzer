@@ -1394,7 +1394,10 @@ export function GopPlayer({
       if (frameQueueRef.current.length > MAX_QUEUE_SIZE) {
         while (frameQueueRef.current.length > MAX_QUEUE_SIZE * 0.8) {
           if (signal.aborted) break;
-          await yieldToMain();
+          await Promise.race([
+            yieldToMain(),
+            new Promise<void>(resolve => setTimeout(resolve, 10)),
+          ]);
         }
       }
 

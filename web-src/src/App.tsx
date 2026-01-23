@@ -6,7 +6,7 @@ import { clearCache, getCacheStats, isCacheEnabled, setCacheEnabled, CacheStats 
 import { detectFileFormat, STREAMING_THRESHOLD, formatFileSize } from './utils/streamingReader';
 import { clearAllCaches } from './utils/memoryDebug';
 import { wasmWorker } from './workers/wasmWorkerManager';
-import { TimelineChart } from './components/TimelineChart';
+// import { TimelineChart } from './components/TimelineChart';
 import { DetailModal } from './components/DetailModal';
 import { GopPlayer } from './components/GopPlayer';
 import { BoxTreeViewer } from './components/BoxTreeViewer';

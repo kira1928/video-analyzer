@@ -237,15 +237,15 @@ async function deleteFromOpfs(fileId: string, tagIndex: number) {
   }
 }
 
-async function deleteAudioFromOpfs(fileId: string, gopIndex: number) {
-  try {
-    const dir = await getOpfsAudioDir();
-    const fileName = getOpfsAudioFileName(fileId, gopIndex);
-    await dir.removeEntry(fileName);
-  } catch (e) {
-    // Ignore if not found
-  }
-}
+// async function deleteAudioFromOpfs(fileId: string, gopIndex: number) {
+//   try {
+//     const dir = await getOpfsAudioDir();
+//     const fileName = getOpfsAudioFileName(fileId, gopIndex);
+//     await dir.removeEntry(fileName);
+//   } catch (e) {
+//     // Ignore if not found
+//   }
+// }
 
 async function clearOpfs() {
   try {

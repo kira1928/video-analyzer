@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AnalysisResult, SegmentInfo } from '../types';
+import { AnalysisResult } from '../types';
 import { formatDuration } from '../utils/format';
 import { splitFlvSegment, splitMp4Segment, splitMp4SegmentStreaming } from '../utils/wasm';
 import './SegmentPanel.css';

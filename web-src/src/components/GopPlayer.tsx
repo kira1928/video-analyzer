@@ -132,7 +132,7 @@ export function GopPlayer({
   const [isPlaying, setIsPlaying] = useState(false);
   const [isDecoding, setIsDecoding] = useState(true);
   const [isVertical, setIsVertical] = useState(false);
-  const [isFrameHiResReady, setIsFrameHiResReady] = useState(false);
+  // const [isFrameHiResReady, setIsFrameHiResReady] = useState(false);
   const [gopTags, setGopTags] = useState<TagSummary[]>([]);
   const [isLoadingGopTags, setIsLoadingGopTags] = useState(false);
 
@@ -193,7 +193,7 @@ export function GopPlayer({
     if (tagIndex !== undefined) {
       currentDisplayTagRef.current = tagIndex;
     }
-    setIsFrameHiResReady(true);
+    // setIsFrameHiResReady(true);
     drawImageToCanvas(url, true);
   }, [drawImageToCanvas]);
 
@@ -202,26 +202,26 @@ export function GopPlayer({
     if (tagIndex !== undefined) {
       currentDisplayTagRef.current = tagIndex;
     }
-    setIsFrameHiResReady(false);
+    // setIsFrameHiResReady(false);
     drawImageToCanvas(thumb.imageData);
   }, [drawImageToCanvas]);
 
-  const drawVideoFrameToCanvas = useCallback((frame: VideoFrame, tagIndex?: number) => {
-    if (!canvasRef.current) return;
-    if (tagIndex !== undefined) {
-      currentDisplayTagRef.current = tagIndex;
-    }
-    const ctx = canvasRef.current.getContext('2d');
-    if (!ctx) return;
-    canvasRef.current.width = frame.displayWidth;
-    canvasRef.current.height = frame.displayHeight;
-    ctx.drawImage(frame, 0, 0);
-    setIsFrameHiResReady(true);
-  }, []);
+  // const drawVideoFrameToCanvas = useCallback((frame: VideoFrame, tagIndex?: number) => {
+  //   if (!canvasRef.current) return;
+  //   if (tagIndex !== undefined) {
+  //     currentDisplayTagRef.current = tagIndex;
+  //   }
+  //   const ctx = canvasRef.current.getContext('2d');
+  //   if (!ctx) return;
+  //   canvasRef.current.width = frame.displayWidth;
+  //   canvasRef.current.height = frame.displayHeight;
+  //   ctx.drawImage(frame, 0, 0);
+  //   setIsFrameHiResReady(true);
+  // }, []);
 
   const drawCachedThumbnail = useCallback((thumbData: string, tagIndex: number) => {
     currentDisplayTagRef.current = tagIndex;
-    setIsFrameHiResReady(false);
+    // setIsFrameHiResReady(false);
     drawImageToCanvas(thumbData);
   }, [drawImageToCanvas]);
 
@@ -771,23 +771,6 @@ export function GopPlayer({
   }, [drawThumbnailToCanvas, updateThumbnailState]);
 
 
-  // 创建缩略图
-  const createThumbnail = useCallback((frame: VideoFrame, tagIndex: number, timestamp: number, isKeyframe: boolean): FrameThumbnail => {
-    const thumbCanvas = document.createElement('canvas');
-    const scale = 80 / Math.max(frame.displayWidth, frame.displayHeight);
-    thumbCanvas.width = Math.round(frame.displayWidth * scale);
-    thumbCanvas.height = Math.round(frame.displayHeight * scale);
-    const ctx = thumbCanvas.getContext('2d');
-    if (ctx) {
-      ctx.drawImage(frame, 0, 0, thumbCanvas.width, thumbCanvas.height);
-    }
-    return {
-      tagIndex,
-      timestamp,
-      isKeyframe,
-      imageData: thumbCanvas.toDataURL('image/jpeg', 0.6)
-    };
-  }, []);
   // 键盘导航
   // 切换播放/暂停
   const togglePlay = useCallback(() => {
@@ -969,7 +952,7 @@ export function GopPlayer({
     setIsPlaying(false);
     setThumbnails([]);
     thumbnailsRef.current = [];
-    setIsFrameHiResReady(false);
+    // setIsFrameHiResReady(false);
     currentDisplayTagRef.current = null;
     const { tags: videoTagsForDecode, skipped: skippedFrames } = trimLeadingNonKeyframes(gopVideoTags);
     tagsRef.current = videoTagsForDecode;
@@ -996,7 +979,7 @@ export function GopPlayer({
           throw new Error("浏览器不支持 WebCodecs API");
         }
 
-        const wasm = getWasmModule();
+        // const wasm = getWasmModule();
         let skipVideoDecode = false;
 
         // 1. 尝试从缓存完全恢复
@@ -1309,237 +1292,22 @@ export function GopPlayer({
   ]);
 
   // 解码 GOP
-  const decodeGop = async (
-    decoder: VideoDecoder,
-    tags: TagSummary[],
-    data: Uint8Array | null,
-    wasm: any,
-    signal: AbortSignal,
-    getSampleData?: (tag: TagSummary) => Promise<Uint8Array>
-  ) => {
-    let frameIndex = 0;
-    let decodedCount = 0;
-    let skippedCount = 0;
-
-    console.log(`开始解码 GOP, 共 ${tags.length} 个视频 Tag`);
-
-    // 检测格式
-    const isMP4OrTS = formatLower === 'mp4' || formatLower === 'ts';
-    console.log(`解码模式: ${isMP4OrTS ? 'MP4/TS' : 'FLV'}`);
-
-    // 1. 预计算所有帧的 PTS 和 Duration
-    const frameMetaMap = new Map<number, { pts: number, duration: number }>();
-    const ptsList: { index: number; pts: number }[] = [];
-
-    if (isMP4OrTS) {
-      // MP4/TS: 直接使用 videoTimeline 中的时间信息
-      for (const tag of tags) {
-        const timelinePoint = analysisResult.videoTimeline.find(p => p.index === tag.index);
-        if (timelinePoint) {
-          // PTS 单位统一为 microseconds
-          const pts = timelinePoint.pts * 1000 * 1000; // seconds -> microseconds
-          ptsList.push({ index: tag.index, pts });
-        } else {
-          // 降级使用 timestamp
-          const pts = tag.timestamp * 1000; // ms -> microseconds
-          ptsList.push({ index: tag.index, pts });
-        }
-      }
-    } else {
-      // FLV: 从 tag 数据解析 CTS
-      // 注意：data 在 FLV 模式下必定不为 null（函数调用前已检查）
-      for (const tag of tags) {
-        const offset = tag.offset + 11; // Tag Header 11 bytes
-        if (offset + 5 > data!.length) continue;
-
-        const p = data!.subarray(offset, offset + 5);
-        if (p[1] !== 1) continue; // 只计算 NALU
-
-        const cts = (p[2] << 16) | (p[3] << 8) | p[4];
-        const pts = (tag.timestamp + cts) * 1000; // microseconds
-        ptsList.push({ index: tag.index, pts });
-      }
-    }
-
-    // 按 PTS 排序
-    ptsList.sort((a, b) => a.pts - b.pts);
-    const basePts = ptsList.length > 0 ? ptsList[0].pts : 0;
-
-    // 计算 Duration 并归一化 PTS
-    for (let i = 0; i < ptsList.length; i++) {
-      const current = ptsList[i];
-      const normalizedPts = current.pts - basePts;
-
-      let duration = 33333; // 默认 33ms (approx 30fps)
-
-      if (i < ptsList.length - 1) {
-        const next = ptsList[i + 1];
-        duration = next.pts - current.pts;
-      } else if (i > 0) {
-        duration = current.pts - ptsList[i - 1].pts;
-      }
-
-      if (duration <= 0) duration = 33333;
-      frameMetaMap.set(current.index, { pts: normalizedPts, duration });
-    }
-
-    // 2. 逐 Tag/Sample 解码
-    for (const tag of tags) {
-      if (signal.aborted) break;
-      if (!decoderRef.current || decoderRef.current.state === 'closed') break;
-
-      // === 流控逻辑 ===
-      const MAX_QUEUE_SIZE = 24;
-      if (frameQueueRef.current.length > MAX_QUEUE_SIZE) {
-        while (frameQueueRef.current.length > MAX_QUEUE_SIZE * 0.8) {
-          if (signal.aborted) break;
-          await new Promise(r => setTimeout(r, 10));
-        }
-      }
-
-      try {
-        let naluData: Uint8Array;
-        let pts: number;
-        let duration: number;
-
-        if (isMP4OrTS) {
-          // MP4/TS: 数据直接在 offset 位置，已经是 AVCC/HVCC 格式
-          if (data) {
-            naluData = data.subarray(tag.offset, tag.offset + tag.size);
-          } else if (getSampleData) {
-            naluData = await getSampleData(tag);
-          } else {
-            throw new Error('无法读取 MP4 Sample 数据');
-          }
-
-          // 使用预计算的元数据
-          const meta = frameMetaMap.get(tag.index);
-          pts = meta ? meta.pts : tag.timestamp * 1000;
-          duration = meta ? meta.duration : 33333;
-
-          if (frameIndex === 0) {
-            const hexStr = Array.from(naluData.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-            console.log(`MP4 Frame 0: size=${naluData.length}, first 16 bytes: ${hexStr}`);
-          }
-        } else {
-          // FLV: 需要解析 tag header
-          let videoTagData: Uint8Array;
-          if (data) {
-            const tagDataOffset = tag.offset + 11;
-            videoTagData = data.subarray(tagDataOffset, tagDataOffset + tag.size);
-          } else if (getSampleData) {
-            videoTagData = await getSampleData(tag);
-          } else {
-            throw new Error('无法读取 FLV Tag 数据');
-          }
-
-          const codecId = videoTagData[0] & 0x0f;
-          const avcPacketType = videoTagData[1];
-
-          if (avcPacketType !== 1) {
-            skippedCount++;
-            continue;
-          }
-
-          const meta = frameMetaMap.get(tag.index);
-          const cts = (videoTagData[2] << 16) | (videoTagData[3] << 8) | videoTagData[4];
-          pts = meta ? meta.pts : (tag.timestamp + cts) * 1000;
-          duration = meta ? meta.duration : 33333;
-
-          naluData = videoTagData.subarray(5);
-
-          // FLV HEVC Annex B 转换
-          if (codecId === 12 && isAnnexBRef.current) {
-            if (wasm.isAnnexBFormat(naluData)) {
-              naluData = wasm.convertAnnexBToAVCC(naluData);
-            }
-          }
-        }
-
-        const isKey = tag.isKeyframe;
-
-        const chunk = new EncodedVideoChunk({
-          type: isKey ? 'key' : 'delta',
-          timestamp: pts,
-          duration: duration,
-          data: naluData
-        });
-
-        if (frameIndex === 0) {
-          console.log(`Feed Frame 0: type=${chunk.type}, pts=${chunk.timestamp / 1000}ms, dur=${chunk.duration! / 1000}ms`);
-        }
-
-        if (frameIndex < 3 || frameIndex % 30 === 0) {
-          console.log(`Feed Frame ${frameIndex}: type=${chunk.type}, pts=${(chunk.timestamp / 1000).toFixed(1)}ms`);
-        }
-        decoder.decode(chunk);
-        decodedCount++;
-        frameIndex++;
-      } catch (e) {
-        console.error(`Frame ${frameIndex} decoding failed:`, e);
-      }
-    }
-
-    if (signal.aborted) return;
-
-    console.log(`解码完成: ${decodedCount} 帧已解码, ${skippedCount} 帧已跳过`);
-    console.log(`decoder.state: ${decoder.state}, decodeQueueSize: ${decoder.decodeQueueSize}`);
-
-    try {
-      await decoder.flush();
-      console.log(`Flush 完成, 帧队列长度: ${frameQueueRef.current.length}`);
-    } catch (e) {
-      if (!signal.aborted) {
-        console.error('Flush 失败:', e);
-      }
-    }
-  };
+  // const decodeGop = async (
+  //   decoder: VideoDecoder,
+  //   tags: TagSummary[],
+  //   data: Uint8Array | null,
+  //   wasm: any,
+  //   signal: AbortSignal,
+  //   getSampleData?: (tag: TagSummary) => Promise<Uint8Array>
+  // ) => {
+  //   // ... (由于 Worker 解码的引入，这部分旧的同步解码逻辑已被弃用)
+  // };
 
 
   // 渲染循环
-  const renderLoop = () => {
-    if (!canvasRef.current || !decoderRef.current) return;
-
-    let emptyFrames = 0;
-    const maxEmptyFrames = 180;
-
-    const render = () => {
-      if (frameQueueRef.current.length > 0) {
-        const frame = frameQueueRef.current.shift();
-        if (frame) {
-          const ctx = canvasRef.current!.getContext('2d');
-          if (ctx) {
-            canvasRef.current!.width = frame.displayWidth;
-            canvasRef.current!.height = frame.displayHeight;
-            ctx.drawImage(frame, 0, 0);
-            setCurrentFrame(prev => prev + 1);
-          }
-          frame.close();
-          emptyFrames = 0;
-        }
-      } else {
-        emptyFrames++;
-      }
-
-      const decoder = decoderRef.current;
-      const shouldStop =
-        !decoder ||
-        decoder.state === 'closed' ||
-        (frameQueueRef.current.length === 0 && decoder.decodeQueueSize === 0) ||
-        emptyFrames >= maxEmptyFrames;
-
-      if (shouldStop) {
-        if (emptyFrames >= maxEmptyFrames) {
-          console.log(`渲染超时，停止`);
-        }
-        return;
-      }
-
-      animationFrameRef.current = requestAnimationFrame(render);
-    };
-
-    animationFrameRef.current = requestAnimationFrame(render);
-  };
+  // const renderLoop = () => {
+  //   // ... (渲染循环也移到了其他地方或不再需要)
+  // };
 
   return (
     <div className="gop-player-overlay">

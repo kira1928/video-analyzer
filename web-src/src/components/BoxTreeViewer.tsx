@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef, useEffect, RefObject } from 'react';
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Mp4BoxTree, Mp4BoxNode, BoxField, Mp4BoxChildrenResult, Mp4BoxFieldsResult, Mp4BoxSearchResult } from '../types';
 import { wasmWorker } from '../workers/wasmWorkerManager';
 import './BoxTreeViewer.css';
@@ -39,8 +39,8 @@ interface StreamingFieldState {
 const HEX_BYTES_PER_LINE = 16;
 const STREAMING_HEX_CHUNK_BYTES = 4096;
 const STREAMING_HEX_LINE_HEIGHT = 20;
-const STREAMING_HEX_OVERSCAN_LINES = 40;
-const STREAMING_HEX_MAX_CHUNKS = 24;
+// const STREAMING_HEX_OVERSCAN_LINES = 40;
+// const STREAMING_HEX_MAX_CHUNKS = 24;
 
 
 export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, fileId, onClose }: BoxTreeViewerProps) {
@@ -291,32 +291,31 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
     if (!selectedBox || !streamingHexData) return { lines: [], startOffset: 0, endOffset: 0 };
 
     const maxBytes = STREAMING_HEX_CHUNK_BYTES;
-    const boxStart = streamingHexBaseOffset;
-    const boxEnd = Math.min(boxStart + Number(selectedBox.size), boxStart + maxBytes);
+    const boxEnd = Math.min(streamingHexBaseOffset + Number(selectedBox.size), streamingHexBaseOffset + maxBytes);
 
-    const alignedStart = Math.floor(boxStart / HEX_BYTES_PER_LINE) * HEX_BYTES_PER_LINE;
+    const alignedStart = Math.floor(streamingHexBaseOffset / HEX_BYTES_PER_LINE) * HEX_BYTES_PER_LINE;
     const alignedEnd = Math.ceil(boxEnd / HEX_BYTES_PER_LINE) * HEX_BYTES_PER_LINE;
 
     const lines: HexLine[] = [];
     const buffer = streamingHexData;
-    for (let offset = alignedStart; offset < alignedEnd && offset < boxStart + buffer.length; offset += HEX_BYTES_PER_LINE) {
+    for (let offset = alignedStart; offset < alignedEnd && offset < streamingHexBaseOffset + buffer.length; offset += HEX_BYTES_PER_LINE) {
       const bytes: number[] = [];
       let ascii = '';
       for (let i = 0; i < HEX_BYTES_PER_LINE; i++) {
         const globalOffset = offset + i;
-        if (globalOffset < boxStart || globalOffset >= boxStart + buffer.length) {
+        if (globalOffset < streamingHexBaseOffset || globalOffset >= streamingHexBaseOffset + buffer.length) {
           bytes.push(0);
           ascii += ' ';
           continue;
         }
-        const byte = buffer[globalOffset - boxStart];
+        const byte = buffer[globalOffset - streamingHexBaseOffset];
         bytes.push(byte);
         ascii += byte >= 32 && byte < 127 ? String.fromCharCode(byte) : '.';
       }
       lines.push({ offset, bytes, ascii });
     }
 
-    return { lines, startOffset: boxStart, endOffset: boxEnd };
+    return { lines, startOffset: streamingHexBaseOffset, endOffset: boxEnd };
   }, [selectedBox, streamingHexBaseOffset, streamingHexData]);
 
   // 计算高亮区域
@@ -775,7 +774,6 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
                     <div className="box-hex-content" ref={hexContainerRef}>
                       <HexView
                         lines={hexData.lines}
-                        boxStart={Number(selectedBox.offset)}
                         highlightRanges={highlightRanges}
                       />
                     </div>
@@ -808,7 +806,6 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
                       {streamingHexData ? (
                         <HexView
                           lines={streamingHexPreview.lines}
-                          boxStart={Number(selectedBox.offset)}
                           highlightRanges={highlightRanges}
                         />
                       ) : (
@@ -854,11 +851,10 @@ export function BoxTreeViewer({ boxTree, fileData, isStreamingMode = false, file
 /** Hex 视图组件 */
 interface HexViewProps {
   lines: HexLine[];
-  boxStart: number;
   highlightRanges: HighlightRange[];
 }
 
-function HexView({ lines, boxStart, highlightRanges }: HexViewProps) {
+function HexView({ lines, highlightRanges }: HexViewProps) {
   // 获取字节的高亮类型
   const getByteHighlight = (globalOffset: number): string => {
     for (const range of highlightRanges) {
@@ -913,324 +909,6 @@ function HexView({ lines, boxStart, highlightRanges }: HexViewProps) {
   );
 }
 
-interface StreamingHexViewProps {
-  fileId: string;
-  box: Mp4BoxNode;
-  highlightRanges: HighlightRange[];
-  containerRef: RefObject<HTMLDivElement>;
-}
-
-function StreamingHexView({ fileId, box, highlightRanges, containerRef }: StreamingHexViewProps) {
-  const totalBytes = Number(box.size);
-  const totalLines = Math.ceil(totalBytes / HEX_BYTES_PER_LINE);
-  const [viewport, setViewport] = useState({ start: 0, end: 0 });
-  const [, setRenderTick] = useState(0);
-  const [jumpInput, setJumpInput] = useState('');
-  const cacheRef = useRef<Map<number, Uint8Array>>(new Map());
-  const pendingRef = useRef<Set<number>>(new Set());
-  const accessRef = useRef<Map<number, number>>(new Map());
-  const accessTickRef = useRef(0);
-  const activeKeyRef = useRef('');
-  const visibleChunkRangeRef = useRef<{ start: number; end: number } | null>(null);
-  const isMountedRef = useRef(true);
-
-  // 跳转到偏移
-  const jumpToOffset = useCallback((offset: number) => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    // 确保偏移在有效范围内
-    const clampedOffset = Math.max(0, Math.min(offset, totalBytes - 1));
-    const lineIndex = Math.floor(clampedOffset / HEX_BYTES_PER_LINE);
-    const scrollTop = lineIndex * STREAMING_HEX_LINE_HEIGHT;
-
-    el.scrollTop = scrollTop;
-    // updateViewport 会在滚动事件中自动调用
-  }, [containerRef, totalBytes]);
-
-  const getByteHighlight = useCallback((globalOffset: number): string => {
-    for (const range of highlightRanges) {
-      if (globalOffset >= range.start && globalOffset < range.end) {
-        switch (range.type) {
-          case 'header': return 'hex-highlight-header';
-          case 'field': return 'hex-highlight-field';
-          case 'content': return 'hex-highlight-content';
-        }
-      }
-    }
-    return '';
-  }, [highlightRanges]);
-
-  const markAccess = useCallback((chunkIndex: number) => {
-    accessTickRef.current += 1;
-    accessRef.current.set(chunkIndex, accessTickRef.current);
-  }, []);
-
-  const evictChunks = useCallback(() => {
-    const cache = cacheRef.current;
-    if (cache.size <= STREAMING_HEX_MAX_CHUNKS) return;
-
-    const keep = visibleChunkRangeRef.current;
-    const candidates = Array.from(cache.keys()).filter(idx => {
-      if (!keep) return true;
-      return idx < keep.start || idx > keep.end;
-    });
-
-    candidates.sort((a, b) => {
-      const aScore = accessRef.current.get(a) ?? 0;
-      const bScore = accessRef.current.get(b) ?? 0;
-      return aScore - bScore;
-    });
-
-    while (cache.size > STREAMING_HEX_MAX_CHUNKS && candidates.length > 0) {
-      const idx = candidates.shift()!;
-      cache.delete(idx);
-      accessRef.current.delete(idx);
-    }
-  }, []);
-
-  const requestChunk = useCallback(async (chunkIndex: number) => {
-    if (pendingRef.current.has(chunkIndex)) return;
-    if (cacheRef.current.has(chunkIndex)) return;
-
-    const baseOffset = chunkIndex * STREAMING_HEX_CHUNK_BYTES;
-    const remaining = totalBytes - baseOffset;
-    if (remaining <= 0) return;
-
-    const length = Math.min(STREAMING_HEX_CHUNK_BYTES, remaining);
-    pendingRef.current.add(chunkIndex);
-    const requestKey = `${fileId}-${box.offset}-${box.size}`;
-
-    try {
-      const data = await wasmWorker.readMp4Bytes(
-        fileId,
-        Number(box.offset) + baseOffset,
-        length
-      );
-      if (!isMountedRef.current || activeKeyRef.current !== requestKey) {
-        return;
-      }
-      cacheRef.current.set(chunkIndex, data);
-      markAccess(chunkIndex);
-      evictChunks();
-      setRenderTick(tick => tick + 1);
-    } finally {
-      pendingRef.current.delete(chunkIndex);
-    }
-  }, [box.offset, box.size, evictChunks, fileId, markAccess, totalBytes]);
-
-  const ensureChunksForLines = useCallback((startLine: number, endLine: number) => {
-    if (totalBytes === 0) return;
-    const firstByte = startLine * HEX_BYTES_PER_LINE;
-    const lastByte = Math.min(totalBytes, (endLine + 1) * HEX_BYTES_PER_LINE);
-    if (lastByte <= firstByte) return;
-
-    const startChunk = Math.floor(firstByte / STREAMING_HEX_CHUNK_BYTES);
-    const endChunk = Math.floor((lastByte - 1) / STREAMING_HEX_CHUNK_BYTES);
-    visibleChunkRangeRef.current = { start: startChunk, end: endChunk };
-
-    for (let chunkIndex = startChunk; chunkIndex <= endChunk; chunkIndex += 1) {
-      if (cacheRef.current.has(chunkIndex)) {
-        markAccess(chunkIndex);
-        continue;
-      }
-      void requestChunk(chunkIndex);
-    }
-  }, [markAccess, requestChunk, totalBytes]);
-
-  const updateViewport = useCallback(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    if (totalLines <= 0) {
-      setViewport({ start: 0, end: -1 });
-      return;
-    }
-    const height = el.clientHeight;
-    const scrollTop = el.scrollTop;
-    const startLine = Math.max(0, Math.floor(scrollTop / STREAMING_HEX_LINE_HEIGHT) - STREAMING_HEX_OVERSCAN_LINES);
-    const endLine = Math.min(totalLines - 1, Math.ceil((scrollTop + height) / STREAMING_HEX_LINE_HEIGHT) + STREAMING_HEX_OVERSCAN_LINES);
-    setViewport({ start: startLine, end: endLine });
-    ensureChunksForLines(startLine, endLine);
-  }, [containerRef, ensureChunksForLines, totalLines]);
-
-  useEffect(() => {
-    const key = `${fileId}-${box.offset}-${box.size}`;
-    activeKeyRef.current = key;
-    cacheRef.current.clear();
-    pendingRef.current.clear();
-    accessRef.current.clear();
-    accessTickRef.current = 0;
-    visibleChunkRangeRef.current = null;
-    setViewport({ start: 0, end: 0 });
-    setRenderTick(tick => tick + 1);
-
-    const el = containerRef.current;
-    if (el) {
-      el.scrollTop = 0;
-    }
-
-    requestAnimationFrame(() => {
-      updateViewport();
-    });
-  }, [box.offset, box.size, containerRef, fileId, updateViewport]);
-
-  useEffect(() => {
-    return () => {
-      isMountedRef.current = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    let rafId = 0;
-
-    const handleScroll = () => {
-      if (rafId) return;
-      rafId = window.requestAnimationFrame(() => {
-        rafId = 0;
-        updateViewport();
-      });
-    };
-
-    el.addEventListener('scroll', handleScroll);
-    updateViewport();
-
-    return () => {
-      if (rafId) {
-        window.cancelAnimationFrame(rafId);
-      }
-      el.removeEventListener('scroll', handleScroll);
-    };
-  }, [containerRef, updateViewport]);
-
-  if (totalLines <= 0) {
-    return <div className="hex-empty">暂无可显示数据</div>;
-  }
-
-  const startOffset = viewport.start * STREAMING_HEX_LINE_HEIGHT;
-  const visibleLines = [];
-  for (let lineIndex = viewport.start; lineIndex <= viewport.end; lineIndex += 1) {
-    const lineOffset = lineIndex * HEX_BYTES_PER_LINE;
-    const absoluteOffset = Number(box.offset) + lineOffset;
-    const bytes: Array<number | null> = [];
-    const asciiChars: string[] = [];
-
-    for (let i = 0; i < HEX_BYTES_PER_LINE; i += 1) {
-      const byteOffset = lineOffset + i;
-      if (byteOffset >= totalBytes) {
-        bytes.push(null);
-        asciiChars.push(' ');
-        continue;
-      }
-
-      const chunkIndex = Math.floor(byteOffset / STREAMING_HEX_CHUNK_BYTES);
-      const chunk = cacheRef.current.get(chunkIndex);
-      let byte: number | null = null;
-      if (chunk) {
-        const innerOffset = byteOffset - chunkIndex * STREAMING_HEX_CHUNK_BYTES;
-        if (innerOffset >= 0 && innerOffset < chunk.length) {
-          byte = chunk[innerOffset];
-        }
-      }
-
-      if (byte === null) {
-        bytes.push(null);
-        asciiChars.push(' ');
-      } else {
-        bytes.push(byte);
-        asciiChars.push(byte >= 32 && byte < 127 ? String.fromCharCode(byte) : '.');
-      }
-    }
-
-    visibleLines.push({
-      index: lineIndex,
-      offset: absoluteOffset,
-      bytes,
-      ascii: asciiChars,
-    });
-  }
-
-  return (
-    <div
-      className="hex-view hex-view-virtual"
-      style={{ height: `${totalLines * STREAMING_HEX_LINE_HEIGHT}px` }}
-    >
-      <div
-        className="hex-virtual-viewport"
-        style={{ transform: `translateY(${startOffset}px)` }}
-      >
-        {visibleLines.map(line => (
-          <div
-            key={line.index}
-            className="hex-line"
-            style={{ height: STREAMING_HEX_LINE_HEIGHT, lineHeight: `${STREAMING_HEX_LINE_HEIGHT}px` }}
-          >
-            <span className="hex-offset">
-              {line.offset.toString(16).toUpperCase().padStart(8, '0')}
-            </span>
-            <span className="hex-bytes">
-              {line.bytes.map((byte, byteIndex) => {
-                const globalOffset = line.offset + byteIndex;
-                const highlightClass = byte !== null ? getByteHighlight(globalOffset) : '';
-                return (
-                  <span key={byteIndex} className={`hex-byte ${highlightClass}`}>
-                    {byte === null ? '--' : byte.toString(16).toUpperCase().padStart(2, '0')}
-                  </span>
-                );
-              })}
-              {line.bytes.length < HEX_BYTES_PER_LINE && (
-                <span className="hex-padding">
-                  {'   '.repeat(HEX_BYTES_PER_LINE - line.bytes.length)}
-                </span>
-              )}
-            </span>
-            <span className="hex-ascii">
-              {line.ascii.map((char, idx) => {
-                const globalOffset = line.offset + idx;
-                const byte = line.bytes[idx];
-                const highlightClass = byte !== null ? getByteHighlight(globalOffset) : '';
-                const asciiClass = highlightClass.replace('hex-', 'ascii-');
-                return <span key={idx} className={asciiClass}>{char}</span>;
-              })}
-            </span>
-          </div>
-        ))}
-      </div>
-      <div className="hex-jump-controls">
-        <input
-          type="text"
-          placeholder="跳转到偏移 (hex 或 dec)"
-          value={jumpInput}
-          onChange={(e) => setJumpInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              const input = jumpInput.trim();
-              if (!input) return;
-
-              let offset: number;
-              if (input.startsWith('0x') || /^[0-9A-Fa-f]+$/.test(input)) {
-                // Hex format
-                offset = parseInt(input.replace('0x', ''), 16);
-              } else {
-                // Decimal format
-                offset = parseInt(input, 10);
-              }
-
-              if (!isNaN(offset)) {
-                jumpToOffset(offset);
-              }
-            }
-          }}
-          className="hex-jump-input"
-        />
-        <span className="hex-jump-hint">
-          按 Enter 跳转 (支持 hex: 0x1A2B 或 dec: 6699)
-        </span>
-      </div>
-    </div>
-  );
-}
 
 interface BoxNodeListProps {
   nodes: Mp4BoxNode[];

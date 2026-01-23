@@ -7,6 +7,17 @@
  */
 export function yieldToMain(): Promise<void> {
   return new Promise(resolve => {
+    const hasRaf =
+      typeof requestAnimationFrame === 'function';
+    const isDocumentHidden =
+      typeof document !== 'undefined' && (document as any).hidden === true;
+
+    if (!hasRaf || isDocumentHidden) {
+      // Fallback for environments without requestAnimationFrame or when
+      // the document is hidden, where rAF can be heavily throttled.
+      setTimeout(resolve, 0);
+      return;
+    }
     requestAnimationFrame(() => resolve());
   });
 }

@@ -286,7 +286,7 @@ function App() {
         setAnalysisProgress(`流式解析 ${format.toUpperCase()} 文件 (${formatFileSize(file.size)})...`);
         console.log(`使用 Worker 流式解析模式 (文件大小: ${formatFileSize(file.size)}, 格式: ${format})`);
 
-        // 强制让 UI 有时间渲染进度条
+        // Yield to main thread using RAF to avoid blocking UI during large file processing
         await yieldToMain();
 
         let metadata: any;  // 元数据（不包含全部 tags/gops）

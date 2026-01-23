@@ -103,9 +103,8 @@ pub fn get_gop_tags(result_json: &str, gop_index: usize) -> Result<JsValue, JsEr
 pub fn parse_mp4(data: &[u8]) -> Result<JsValue, JsError> {
     use container::{ContainerReader, Mp4Container};
 
-    let data_vec = data.to_vec();
-    let file_size = data_vec.len() as u64;
-    let mut container = Mp4Container::from_bytes(data_vec);
+    let file_size = data.len() as u64;
+    let mut container = Mp4Container::from_slice(data);
 
     // 读取容器信息
     let info = container.read_info().map_err(|e| JsError::new(&e))?;
@@ -394,8 +393,7 @@ pub fn get_mp4_sample_detail(
         .ok_or_else(|| JsError::new("不是 MP4 Sample"))?;
 
     // 重新解析 MP4 以获取详细信息
-    let data_vec = file_data.to_vec();
-    let mut container = Mp4Container::from_bytes(data_vec.clone());
+    let mut container = Mp4Container::from_slice(file_data);
     let _info = container.read_info().map_err(|e| JsError::new(&e))?;
 
     // 收集 sample 的详细信息

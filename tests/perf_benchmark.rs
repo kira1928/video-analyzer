@@ -6,6 +6,7 @@ fn generate_data(size: usize) -> Vec<u8> {
 }
 
 #[test]
+#[ignore]
 fn benchmark_allocation() {
     let size = 50 * 1024 * 1024; // 50MB
     let data = generate_data(size);

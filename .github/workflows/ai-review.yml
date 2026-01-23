@@ -1,0 +1,31 @@
+name: AI Review Relay
+
+on:
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR Number manually specified'
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  ai-review-relay:
+    runs-on: ubuntu-latest
+    name: Relay AI Review
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run AI Review Relay
+        uses: kira1928/ai-review-relay@v1.2.0
+        with:
+          dev_ai: 'jules'
+          jules_token: ${{ secrets.JULES_TOKEN }}

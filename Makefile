@@ -38,3 +38,15 @@ install-web:
 # 帮助信息
 help:
 	node scripts/build.js help
+
+# 安装 Playwright 浏览器
+install-playwright:
+	cd web-src && npx playwright install chromium
+
+# 运行 E2E 测试（无头模式）
+test-e2e:
+	cd web-src && npm run test
+
+# 运行 E2E 测试（有头模式，调试用）
+test-e2e-headed:
+	cd web-src && npm run test:headed

@@ -321,26 +321,26 @@ function App() {
         setLoadedGops([]);  // 清空已加载的 GOPs
 
         // 构造一个临时的 AnalysisResult，只包含元数据，tags/gops 为空
-          const mockResult: AnalysisResult = {
-            format: metadata.format || 'mp4',
-            fileSize: metadata.fileSize || 0,
-            duration: metadata.duration || 0,
-            videoTagCount: metadata.videoTagCount || 0,
-            audioTagCount: metadata.audioTagCount || 0,
-            hasVideo: (metadata.videoTagCount || 0) > 0,
-            hasAudio: (metadata.audioTagCount || 0) > 0,
-            tags: [],  // 空的，按需加载
-            gops: [],  // 空的，按需加载
-            videoTimeline: [],
-            audioTimeline: [],
-            scriptTagCount: 0,
-            keyframeCount: metadata.keyframeCount || 0,
-            anomalies: [],
-            videoInitData: metadata.videoInitData,
-            videoInitDataList: metadata.videoInitDataList,
-            audioInitData: metadata.audioInitData,
-            segments: metadata.segments || undefined,
-          };
+        const mockResult: AnalysisResult = {
+          format: metadata.format || 'mp4',
+          fileSize: metadata.fileSize || 0,
+          duration: metadata.duration || 0,
+          videoTagCount: metadata.videoTagCount || 0,
+          audioTagCount: metadata.audioTagCount || 0,
+          hasVideo: (metadata.videoTagCount || 0) > 0,
+          hasAudio: (metadata.audioTagCount || 0) > 0,
+          tags: [],  // 空的，按需加载
+          gops: [],  // 空的，按需加载
+          videoTimeline: [],
+          audioTimeline: [],
+          scriptTagCount: 0,
+          keyframeCount: metadata.keyframeCount || 0,
+          anomalies: [],
+          videoInitData: metadata.videoInitData,
+          videoInitDataList: metadata.videoInitDataList,
+          audioInitData: metadata.audioInitData,
+          segments: metadata.segments || undefined,
+        };
 
         console.log(`[App] mockResult:`, mockResult);
 
@@ -484,7 +484,7 @@ function App() {
             </label>
           </div>
           {/* WASM 状态 */}
-          <div className="status">
+          <div className="status" data-testid="wasm-status">
             <div className={`status-dot ${wasmStatus === 'ready' ? 'ready' : ''}`} />
             <span>{wasmMessage}</span>
           </div>
@@ -503,6 +503,7 @@ function App() {
         <input
           type="file"
           id="file-input"
+          data-testid="file-input"
           accept=".flv,.mp4,.ts,.mts,.m2ts,.m4v,.m4a"
           onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
         />
@@ -510,7 +511,7 @@ function App() {
 
       {/* 加载中 */}
       {isAnalyzing && (
-        <div className="loading">
+        <div className="loading" data-testid="loading-indicator">
           <div className="spinner" />
           <p>{analysisProgress || '正在分析文件...'}</p>
           <div className="progress-bar">
@@ -537,15 +538,15 @@ function App() {
       {analysisResult && (
         <>
           {/* 文件信息 */}
-          <div className="file-info">
+          <div className="file-info" data-testid="file-info">
             <div className="file-info-grid">
               <InfoItem label="文件格式" value={analysisResult.format} />
               <InfoItem label="文件大小" value={formatBytes(Number(analysisResult.fileSize))} />
               <InfoItem label="时长" value={formatDuration(analysisResult.duration)} />
-              <InfoItem label={`视频${analysisResult.format?.toLowerCase() === 'mp4' ? 'Sample' : '标签'}`} value={analysisResult.videoTagCount} />
+              <InfoItem label={`视频${analysisResult.format?.toLowerCase() === 'mp4' ? 'Sample' : '标签'}`} value={analysisResult.videoTagCount} testId="sample-count" />
               <InfoItem label={`音频${analysisResult.format?.toLowerCase() === 'mp4' ? 'Sample' : '标签'}`} value={analysisResult.audioTagCount} />
-              <InfoItem label="关键帧" value={analysisResult.keyframeCount} />
-              <InfoItem label="GOP 数量" value={isStreamingMode ? totalGops : analysisResult.gops.length} />
+              <InfoItem label="关键帧" value={analysisResult.keyframeCount} testId="keyframe-count" />
+              <InfoItem label="GOP 数量" value={isStreamingMode ? totalGops : analysisResult.gops.length} testId="gop-count" />
             </div>
 
             {/* MP4 Box 树按钮 */}
@@ -807,7 +808,7 @@ function App() {
                 </span>
               </div>
 
-              <div className="tag-list">
+              <div className="tag-list" data-testid="gop-list">
                 {activeTab === 'gop' ? (
                   (() => {
                     const gopsToRender = isStreamingMode ? loadedGops : analysisResult.gops;
@@ -843,6 +844,7 @@ function App() {
                               className="gop-btn"
                               onClick={() => setPlayingGop(gop)}
                               title="播放 GOP"
+                              data-testid={`gop-play-btn-${gop.index}`}
                             >
                               ▶️
                             </button>
@@ -1037,11 +1039,11 @@ function App() {
 }
 
 // 信息项组件
-function InfoItem({ label, value }: { label: string; value: string | number }) {
+function InfoItem({ label, value, testId }: { label: string; value: string | number; testId?: string }) {
   return (
     <div className="info-item">
       <label>{label}</label>
-      <div className="value">{value}</div>
+      <div className="value" data-testid={testId}>{value}</div>
     </div>
   );
 }

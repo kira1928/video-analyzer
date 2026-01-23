@@ -64,15 +64,18 @@ Desktop.ini
 # ===================
 # Test / Debug Files
 # ===================
-*.mp4
-*.flv
-*.ts
-!*.d.ts
-!web-src/src/**/*.ts
+# 注意：不再需要全局 *.ts 规则
+# 测试视频文件（.mp4/.flv/.ts）现在统一输出到 .playwright-output/
 cargo_check.log
 check_error.log
 check_log.txt
 .local/
+*.mp4
+*.flv
+web-src/tests/test-config.local.json
+
+# Playwright 测试产物（统一输出到项目根目录）
+.playwright-output/
 
 # ===================
 # AI / Agent

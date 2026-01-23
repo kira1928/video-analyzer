@@ -1544,7 +1544,7 @@ export function GopPlayer({
 
   return (
     <div className="gop-player-overlay">
-      <div className={`gop-player-modal ${isVertical ? 'vertical-layout' : ''}`}>
+      <div className={`gop-player-modal ${isVertical ? 'vertical-layout' : ''}`} data-testid="gop-player-modal">
         <div className="player-header">
           <h3>GOP 预览: {formatDuration(gop.startTime)}</h3>
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
@@ -1556,7 +1556,7 @@ export function GopPlayer({
             >
               {isVertical ? '◫ 横向布局' : '⊟ 纵向布局'}
             </button>
-            <button className="close-btn" onClick={onClose}>×</button>
+            <button className="close-btn" onClick={onClose} data-testid="close-btn">×</button>
           </div>
         </div>
 
@@ -1565,12 +1565,12 @@ export function GopPlayer({
             {/* 主画布区域 */}
             <div className="canvas-container">
               {error ? (
-                <div className="player-error">{error}</div>
+                <div className="player-error" data-testid="player-error">{error}</div>
               ) : (
                 <canvas ref={canvasRef} />
               )}
               {!error && !isPlaying && thumbnails.length === 0 && isDecoding && (
-                <div className="decoding-overlay">
+                <div className="decoding-overlay" data-testid="decoding-status">
                   <div className="spinner" />
                   <span>{isLoadingGopTags ? '加载 GOP 数据...' : '解码中'}</span>
                 </div>
@@ -1581,7 +1581,7 @@ export function GopPlayer({
           <div className="player-sidebar">
             {/* 帧缩略图画廊 */}
             {(gopVideoTags.length > 0 || isLoadingGopTags || isDecoding) && (
-              <div className="frame-gallery">
+              <div className="frame-gallery" data-testid="frame-gallery">
                 <div className="gallery-header">
                   <span>帧画廊 ({thumbnails.length} 帧)</span>
                 </div>
@@ -1604,6 +1604,7 @@ export function GopPlayer({
                       className={`frame-thumb ${selectedThumbnail === idx ? 'selected' : ''} ${thumb.isKeyframe ? 'keyframe' : ''}`}
                       onClick={() => handleThumbnailClick(thumb.tagIndex, idx)}
                       title={`Tag #${thumb.tagIndex} @ ${formatDuration(thumb.timestamp / 1000)}`}
+                      data-testid={`frame-thumb-${idx}`}
                     >
                       <img src={thumb.imageData} alt={`Frame ${idx}`} />
                       <div className="thumb-info">
@@ -1618,7 +1619,11 @@ export function GopPlayer({
 
             <div className="player-controls">
               <div className="player-actions" style={{ flexWrap: 'wrap', gap: '8px' }}>
-                <button className={`control-btn ${isPlaying ? 'active' : ''}`} onClick={togglePlay}>
+                <button
+                  className={`control-btn ${isPlaying ? 'active' : ''}`}
+                  onClick={togglePlay}
+                  data-testid={isPlaying ? "pause-btn" : "play-btn"}
+                >
                   {isPlaying ? '⏸ 暂停' : '▶ 播放'}
                 </button>
 
@@ -1644,7 +1649,7 @@ export function GopPlayer({
                   </label>
                 )}
               </div>
-              <div className="frame-info">
+              <div className="frame-info" data-testid="frame-count">
                 帧: {currentFrame} / {totalFrames}
               </div>
               {selectedThumbnail !== null && (

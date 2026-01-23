@@ -292,7 +292,6 @@ function App() {
         let metadata: any;  // 元数据（不包含全部 tags/gops）
         if (format === 'mp4') {
           metadata = await wasmWorker.parseMP4Streaming(file, fid, (msg, percent) => {
-            console.log(`[App] 收到进度: ${msg}, 百分比: ${percent}`);
             setAnalysisProgress(msg);
             if (percent !== undefined) {
               setAnalysisProgressPercent(percent);

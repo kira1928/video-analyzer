@@ -346,6 +346,7 @@ function App() {
         setAnalysisResult(mockResult);
         setFileData(null);
         setIsAnalyzing(false);
+        console.log('[E2E] 解析任务完成');
 
         console.log(`数据已缓存在 WASM 端，fileId: ${fid}`);
         console.log(`元数据: ${metadata.totalSamples} samples, ${metadata.totalGops} GOPs`);
@@ -395,6 +396,7 @@ function App() {
         setAnalysisProgress(`解析完成！共 ${result.tags.length.toLocaleString()} 个 ${result.format?.toLowerCase() === 'mp4' ? 'sample' : '标签'}`);
         setAnalysisProgressPercent(100);
         setIsAnalyzing(false);
+        console.log('[E2E] 解析任务完成');
       }
     } catch (error) {
       alert(`分析失败: ${error instanceof Error ? error.message : String(error)}`);

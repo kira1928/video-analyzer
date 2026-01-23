@@ -1,0 +1,13 @@
+{
+  "name": "video-analyzer-e2e",
+  "version": "1.0.0",
+  "description": "E2E tests for video-analyzer",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0",
+    "@types/node": "^20.0.0",
+    "wasm-pack": "^0.14.0"
+  }
+}

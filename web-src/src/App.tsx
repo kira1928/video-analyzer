@@ -282,14 +282,14 @@ function App() {
       setIsStreamingMode(useStreaming);
 
       if (useStreaming) {
-        // 使用 Worker 进行流式解析（不阻塞 UI）
-        setAnalysisProgress(`流式解析 ${format.toUpperCase()} 文件 (${formatFileSize(file.size)})...`);
-        console.log(`使用 Worker 流式解析模式 (文件大小: ${formatFileSize(file.size)}, 格式: ${format})`);
+        // Use Worker for streaming parsing (non-blocking UI)
+        setAnalysisProgress(`Streaming parsing ${format.toUpperCase()} file (${formatFileSize(file.size)})...`);
+        console.log(`Streaming parsing mode using Worker (file size: ${formatFileSize(file.size)}, format: ${format})`);
 
         // Yield to main thread using RAF to avoid blocking UI during large file processing
         await yieldToMain();
 
-        let metadata: any;  // 元数据（不包含全部 tags/gops）
+        let metadata: any;  // Metadata (not including all tags/gops)
         if (format === 'mp4') {
           metadata = await wasmWorker.parseMP4Streaming(file, fid, (msg, percent) => {
             console.log(`[App] 收到进度: ${msg}, 百分比: ${percent}`);

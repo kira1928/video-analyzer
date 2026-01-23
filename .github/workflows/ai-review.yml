@@ -29,3 +29,4 @@ jobs:
         with:
           dev_ai: 'jules'
           jules_token: ${{ secrets.JULES_TOKEN }}
+          pr_number: ${{ github.event.inputs.pr_number || github.event.pull_request.number }}

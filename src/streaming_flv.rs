@@ -212,10 +212,12 @@ impl StreamingFlvParser {
         let data = array.to_vec();
 
         if request_len <= CACHE_CHUNK_BYTES {
-            *self.cache.borrow_mut() = Some(CachedChunk { offset, data: data.clone() });
+            let ret = data[..length.min(data.len())].to_vec();
+            *self.cache.borrow_mut() = Some(CachedChunk { offset, data });
+            Ok(ret)
+        } else {
+            Ok(data[..length.min(data.len())].to_vec())
         }
-
-        Ok(data[..length.min(data.len())].to_vec())
     }
 
     /// 解析 FLV 头部
